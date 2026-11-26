@@ -1,0 +1,27 @@
+{
+  "name": "freshdeps",
+  "owner": {
+    "name": "freshdeps contributors"
+  },
+  "metadata": {
+    "description": "freshdeps: always use the latest stable versions instead of guessing from training data.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "freshdeps",
+      "source": "./",
+      "description": "Skill + PostToolUse hook that resolve and audit the latest stable versions of packages (PyPI, npm, crates.io), GitHub Actions, Docker base images, databases and runtimes.",
+      "version": "0.1.0",
+      "license": "MIT",
+      "category": "development",
+      "keywords": [
+        "dependencies",
+        "versions",
+        "github-actions",
+        "docker",
+        "supply-chain"
+      ]
+    }
+  ]
+}

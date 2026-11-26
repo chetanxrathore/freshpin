@@ -15,7 +15,7 @@ from urllib.parse import urlsplit
 
 from freshdeps import __version__
 
-USER_AGENT = f"freshdeps-cli/{__version__} (+https://pypi.org/project/freshdeps/)"
+USER_AGENT = f"freshdeps-cli/{__version__} (python-urllib; dependency version checker)"
 DEFAULT_TIMEOUT = 5.0
 DEFAULT_RETRIES = 2
 _RETRY_STATUS = {429, 500, 502, 503, 504}

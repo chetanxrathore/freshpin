@@ -3,7 +3,8 @@ requires = ["hatchling>=1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
-name = "freshdeps"
+# The PyPI name "freshdeps" belongs to an unrelated project; the command is still `freshdeps`.
+name = "freshdeps-cli"
 version = "0.1.0"
 description = "Stop AI coding agents from writing stale versions: resolve and audit the latest stable libraries, GitHub Actions, Docker images, databases and runtimes."
 readme = "README.md"
