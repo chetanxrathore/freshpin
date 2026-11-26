@@ -20,7 +20,7 @@ def test_set_get_flush_roundtrip(tmp_path: Path) -> None:
     assert not path.exists()  # writes are batched until flush
     cache.flush()
     on_disk = json.loads(path.read_text())
-    assert on_disk["version"] == 1
+    assert on_disk["version"] == 2
     assert on_disk["entries"]["pypi:requests"]["data"] == {"version": "2.32.5"}
 
     reloaded = Cache(path, ttl=60).get("pypi:requests")
@@ -32,11 +32,24 @@ def test_expired_entries_are_returned_but_not_fresh(tmp_path: Path) -> None:
     path = tmp_path / "cache.json"
     path.write_text(
         json.dumps(
-            {"version": 1, "entries": {"npm:react": {"ts": time.time() - 100, "data": {"v": 1}}}}
+            {"version": 2, "entries": {"npm:react": {"ts": time.time() - 100, "data": {"v": 1}}}}
         )
     )
     entry = Cache(path, ttl=10).get("npm:react")
     assert entry is not None and not entry.fresh and entry.data == {"v": 1}
+
+
+def test_older_cache_format_is_discarded(tmp_path: Path) -> None:
+    # version 1 GitHub entries lack the ref list that keeps `uses:` suggestions valid
+    path = tmp_path / "cache.json"
+    entry = {"ts": time.time(), "data": {"version": "v10.4.0", "details": {"major_tag": "v10"}}}
+    path.write_text(json.dumps({"version": 1, "entries": {"gha:astral-sh/setup-uv": entry}}))
+    cache = Cache(path, ttl=60)
+    assert cache.get("gha:astral-sh/setup-uv") is None
+    cache.set("npm:react", {"v": 2})
+    cache.flush()
+    saved = json.loads(path.read_text())
+    assert saved["version"] == 2 and list(saved["entries"]) == ["npm:react"]
 
 
 def test_disabled_cache_is_a_noop(tmp_path: Path) -> None:

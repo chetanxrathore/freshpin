@@ -236,3 +236,11 @@ def test_python_dash_m_entrypoint() -> None:
         check=False,
     )
     assert proc.returncode == 0 and proc.stdout.strip() == f"freshpin {__version__}"
+
+
+def test_resolve_hint_uses_a_ref_that_exists(world: FakeHttp) -> None:
+    """pypa/gh-action-pypi-publish has no floating v1 tag, so the hint is the full tag."""
+    code, out = run("resolve", "gha:pypa/gh-action-pypi-publish", "gha:ruby/setup-ruby")
+    assert code == 0
+    assert "uses: pypa/gh-action-pypi-publish@v1.14.3" in out
+    assert "uses: ruby/setup-ruby@v1" in out

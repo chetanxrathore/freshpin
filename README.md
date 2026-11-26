@@ -2,6 +2,16 @@
 
 **Stop AI agents from writing `actions/checkout@v3` and `postgres:14`.**
 
+[![PyPI](https://img.shields.io/pypi/v/freshpin)](https://pypi.org/project/freshpin/)
+[![Python versions](https://img.shields.io/pypi/pyversions/freshpin)](https://pypi.org/project/freshpin/)
+[![CI](https://github.com/chetanxrathore/freshpin/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/chetanxrathore/freshpin/actions/workflows/ci.yml)
+[![Downloads](https://img.shields.io/pypi/dm/freshpin)](https://pypistats.org/packages/freshpin)
+[![License](https://img.shields.io/badge/license-MIT-blue)](https://github.com/chetanxrathore/freshpin/blob/main/LICENSE-MIT)
+[![Dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)](https://github.com/chetanxrathore/freshpin/blob/main/pyproject.toml)
+[![Claude Code plugin](https://img.shields.io/badge/Claude%20Code-plugin-D97757)](#install)
+[![Typing](https://img.shields.io/badge/typing-mypy%20strict-blue)](https://mypy-lang.org/)
+[![Ruff](https://img.shields.io/endpoint?url=https://raw.githubusercontent.com/astral-sh/ruff/main/assets/badge/v2.json)](https://github.com/astral-sh/ruff)
+
 AI coding agents pick versions from training data that is months or years old. So they scaffold projects with GitHub Actions three majors behind, Docker images that are already end-of-life, and `"react": "^18.2.0"` long after 19 shipped. Nothing breaks right away, which is why it keeps happening.
 
 `freshpin` makes the agent **look versions up instead of recalling them**:
@@ -42,9 +52,9 @@ Measured on 2026-11-26 (details in [docs/VALIDATION.md](docs/VALIDATION.md)):
 
 - **It changes what the agent writes.** In an A/B `claude plugin eval`, Claude Sonnet 5.5 scaffolded a FastAPI and a Next.js project with and without freshpin. With freshpin, **39/39** version checks were current; without it, **0/39**. From memory it wrote `python:3.13`, `postgres:17`, `redis:7`, `node:24`, `actions/checkout@v4`/`@v5` and `typescript ^5.9`. With freshpin it wrote `python:3.15`, `postgres:19`, `redis:8.12`, `node:26`, `@v7` and `^7.0.2`.
 
-- **100% agreement with independent sources:** 95/95 versions match across PyPI, npm, crates.io, GitHub and the official release feeds, and 43/43 suggested Docker tags exist on Docker Hub.
+- **100% agreement with independent sources:** 97/97 versions match across PyPI, npm, crates.io, GitHub and the official release feeds. 43/43 suggested Docker tags exist on Docker Hub, and 22/22 suggested `uses:` refs exist on GitHub.
 - **Robust on real projects:** across 18 popular open-source repositories, freshpin parsed 1,321 files and 12,135 version declarations with 0 crashes and 0 parse errors. The audit took about 4 seconds with a warm cache.
-- **Tested on every supported Python:** 307 offline tests pass on Python 3.9 through 3.15, including macOS's built-in 3.9, with 94% branch coverage.
+- **Tested on every supported Python:** 317 offline tests pass on Python 3.9 through 3.15, including macOS's built-in 3.9, with 94% branch coverage.
 - **The plugin passes Claude Code's validator:** `claude plugin validate --strict` reports nothing. The A/B eval suite ships in [`evals/`](evals/).
 
 ---
@@ -113,7 +123,7 @@ Fail the build when something is outdated:
 
 ```yaml
 - uses: actions/checkout@v7
-- uses: astral-sh/setup-uv@v10
+- uses: astral-sh/setup-uv@v10.4.0
 - run: uvx --from git+https://github.com/chetanxrathore/freshpin freshpin audit . --fail-on-outdated
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # optional: freshpin also works without a token

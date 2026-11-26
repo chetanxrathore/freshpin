@@ -5,22 +5,32 @@ freshpin ships through two channels, and one release covers both:
 1. **PyPI**: the `freshpin` package, which installs the `freshpin` CLI.
 2. **GitHub**: the repository is also a Claude Code plugin marketplace (skill + hook).
 
-Run every command from the repository root. Nothing here runs automatically; each step is manual.
+Releases are automated. Pushing a `v*` tag runs [`.github/workflows/release.yml`](.github/workflows/release.yml), which:
+
+- builds the wheel and sdist;
+- checks the tag matches the package version;
+- installs the wheel on Linux, macOS and Windows with Python 3.9 and 3.15;
+- publishes to PyPI with [Trusted Publishing](https://docs.pypi.org/trusted-publishers/), so no token is stored, and attaches signed PEP 740 attestations;
+- creates the GitHub release with the built files.
+
+[`.github/workflows/ci.yml`](.github/workflows/ci.yml) runs lint, types, plugin validation and the tests on every push and pull request.
+
+Run every command from the repository root.
 
 ---
 
 ## 0. One-time prerequisites
 
 - A GitHub account.
-- A [PyPI](https://pypi.org/account/register/) account **and** a separate [TestPyPI](https://test.pypi.org/account/register/) account, both with two-factor authentication enabled. PyPI requires 2FA to upload.
+- A [PyPI](https://pypi.org/account/register/) account with two-factor authentication enabled.
 - [uv](https://docs.astral.sh/uv/) installed.
-- Optional: the Claude Code CLI (`claude`), to validate the plugin.
+- Optional: a [TestPyPI](https://test.pypi.org/account/register/) account (separate from PyPI) for a manual rehearsal, and the Claude Code CLI (`claude`) to validate the plugin locally.
 
 ## 1. Check the project metadata
 
 The repository is set up to live at **https://github.com/chetanxrathore/freshpin**. That URL appears in:
 
-- `README.md` (install and CI commands)
+- `README.md` (badges, install and CI commands)
 - `pyproject.toml` → `[project.urls]` (links on the PyPI page)
 - `.claude-plugin/plugin.json` → `homepage` and `repository`
 
@@ -37,12 +47,16 @@ Optionally, set a real author name in these places, which currently say "freshpi
 - `.claude-plugin/plugin.json` → `author.name`
 - `.claude-plugin/marketplace.json` → `owner.name`
 
-## 2. Verify before releasing
+## 2. Verify locally
 
-All of these must pass:
+These are the same checks CI runs:
 
 ```bash
-uv run ruff check src tests hooks skills
+uv run ruff check src tests hooks skills validation
+```
+
+```bash
+uv run ruff format --check src tests hooks skills
 ```
 
 ```bash
@@ -52,6 +66,12 @@ uv run mypy --strict src/freshpin
 ```bash
 uv run pytest -v
 ```
+
+```bash
+claude plugin validate . --strict
+```
+
+Live checks against the real registries, which CI does not run:
 
 ```bash
 uv run freshpin resolve pypi:fastapi gha:actions/checkout eol:postgres eol:python
@@ -65,35 +85,33 @@ Optionally, also run the A/B agent eval. It costs about $5–15 of Claude usage,
 
 ## 3. Commit and push to GitHub
 
-Commit the rename and any placeholder edits:
+Commit the work:
 
 ```bash
 git add -A
 ```
 
 ```bash
-git commit -m "Rename project to freshpin"
+git commit -m "Rename to freshpin; add CI, release workflow, validation, evals and roadmap"
 ```
 
-Create an **empty** public repository named `freshpin` on GitHub (web UI → *New repository*, with no README, license or .gitignore). Then connect it and push:
+Create an **empty** public repository named `freshpin` on GitHub (web UI → *New repository*, with no README, license or .gitignore). Then connect it. This uses the same SSH host alias as your other repositories:
 
 ```bash
-git remote add origin https://github.com/chetanxrathore/freshpin.git
+git remote add origin git@github.com-chetanxrathore:chetanxrathore/freshpin.git
 ```
+
+(Over HTTPS instead: `git remote add origin https://github.com/chetanxrathore/freshpin.git`.)
 
 ```bash
 git push -u origin main
 ```
 
-## 4. Validate the Claude Code plugin
+Open the repository's *Actions* tab and wait for **CI** to go green. The *freshpin audits itself* job is allowed to fail; it only warns when one of this repo's own actions or tools has a newer release.
 
-If the Claude Code CLI is installed:
+## 4. Test the Claude Code plugin locally (optional)
 
-```bash
-claude plugin validate . --strict
-```
-
-To test the plugin locally before announcing it, open Claude Code in another project and run:
+Open Claude Code in another project and run:
 
 ```text
 /plugin marketplace add /absolute/path/to/freshpin
@@ -102,63 +120,44 @@ To test the plugin locally before announcing it, open Claude Code in another pro
 
 Then ask Claude to "write a Dockerfile for a Python app using python:3.10". The hook should reply with `python:3.10-slim -> python:3.15-slim`, or whatever is current, and Claude should fix the file.
 
-## 5. Build the release artifacts
+## 5. One-time: connect PyPI to the release workflow
 
-```bash
-rm -rf dist && uv build
-```
+**On PyPI**, register a *pending publisher*. It turns into a normal Trusted Publisher once the first release creates the project:
 
-```bash
-uvx twine check --strict dist/*
-```
+1. Go to <https://pypi.org/manage/account/publishing/> and choose *GitHub*.
+2. Fill in exactly:
 
-This produces `dist/freshpin-<version>-py3-none-any.whl` and `dist/freshpin-<version>.tar.gz`.
+   | Field | Value |
+   |---|---|
+   | PyPI Project Name | `freshpin` |
+   | Owner | `chetanxrathore` |
+   | Repository name | `freshpin` |
+   | Workflow name | `release.yml` |
+   | Environment name | `pypi` |
 
-## 6. Rehearse on TestPyPI
+**On GitHub**, create the matching environment:
 
-1. On TestPyPI, go to *Account settings → API tokens* and create a token. On a first upload it must have scope *Entire account*, because the project doesn't exist there yet.
-2. Upload:
+1. Repository → *Settings → Environments → New environment*, name it `pypi`.
+2. Recommended protections:
+   - *Required reviewers*: add yourself, so every release waits for your click before uploading.
+   - *Deployment branches and tags*: *Selected branches and tags*, add a **tag** rule `v*`.
 
-   ```bash
-   uv publish --publish-url https://test.pypi.org/legacy/ --token "pypi-TEST-TOKEN-HERE"
-   ```
+## 6. Dry run (optional)
 
-3. Install the package from TestPyPI into a throwaway environment and run it:
+- **Without publishing:** *Actions → Release → Run workflow* on `main`. This builds and runs the install smoke tests on all three OSes. The publish and GitHub release jobs only run for `v*` tags, so they are skipped. The same jobs run on any pull request that changes `pyproject.toml`, `src/freshpin/__init__.py` or the workflow.
+- **Manual TestPyPI rehearsal:** build locally (`rm -rf dist && uv build`), create a TestPyPI API token with scope *Entire account*, then:
 
-   ```bash
-   uvx --default-index https://test.pypi.org/simple/ freshpin --version
-   ```
+  ```bash
+  uv publish --publish-url https://test.pypi.org/legacy/ --token "pypi-TEST-TOKEN-HERE"
+  ```
 
-   ```bash
-   uvx --default-index https://test.pypi.org/simple/ freshpin resolve pypi:requests eol:python
-   ```
+  ```bash
+  uvx --default-index https://test.pypi.org/simple/ freshpin --version
+  ```
 
-   This works because freshpin has no dependencies, so nothing else has to come from TestPyPI.
+  This works because freshpin has no dependencies, so nothing else has to come from TestPyPI.
 
-## 7. Publish to PyPI
-
-1. On PyPI, go to *Account settings → API tokens* and create a token. On the first upload its scope must be *Entire account*.
-2. Upload:
-
-   ```bash
-   uv publish --token "pypi-REAL-TOKEN-HERE"
-   ```
-
-   You can also export `UV_PUBLISH_TOKEN` instead of passing `--token`.
-3. **Right after the first upload**, delete the account-wide token and create a new one scoped to the `freshpin` project only. Use the scoped token for future releases.
-4. Verify from the real index:
-
-   ```bash
-   uvx freshpin --version
-   ```
-
-   ```bash
-   uvx freshpin resolve pypi:freshpin
-   ```
-
-   The second command should print the version you just published. It may take a minute to appear.
-
-## 8. Tag the release on GitHub
+## 7. Release
 
 ```bash
 git tag -a v0.1.0 -m "freshpin 0.1.0"
@@ -168,7 +167,23 @@ git tag -a v0.1.0 -m "freshpin 0.1.0"
 git push origin v0.1.0
 ```
 
-On GitHub, go to *Releases → Draft a new release*, choose tag `v0.1.0`, and attach the two files from `dist/`.
+In *Actions → Release*, follow the run. If you added a required reviewer, approve the `pypi` deployment when it asks. When the run finishes, freshpin 0.1.0 is on PyPI and has a GitHub release with the wheel, the sdist and generated release notes.
+
+## 8. Verify the release
+
+```bash
+uvx freshpin --version
+```
+
+```bash
+uvx freshpin resolve pypi:freshpin
+```
+
+The second command should print the version you just released. It may take a minute to appear. The PyPI page's *Download files* section shows each file's provenance, and the GitHub attestation can be checked against a downloaded file:
+
+```bash
+gh attestation verify freshpin-0.1.0-py3-none-any.whl --repo chetanxrathore/freshpin
+```
 
 ## 9. Tell users how to install
 
@@ -185,17 +200,36 @@ On GitHub, go to *Releases → Draft a new release*, choose tag `v0.1.0`, and at
    - `.claude-plugin/marketplace.json` → `metadata.version` and `plugins[0].version`
 
    Claude Code only offers plugin users an update when the plugin `version` changes.
-2. Repeat steps 2, 3 (commit and push), 5, 7 and 8 with the new version number.
+2. Commit, push, and wait for CI to pass.
+3. Tag `vX.Y.Z` and push the tag, as in step 7. The workflow refuses to publish if the tag and the version disagree.
 
-## Optional: automate with Trusted Publishing
+## Fallback: upload by hand
 
-Once the manual flow works, you can let GitHub Actions publish without storing a token. See [PyPI Trusted Publishers](https://docs.pypi.org/trusted-publishers/). Add a *pending publisher* for `freshpin` on PyPI and use `uv publish --trusted-publishing always` in the workflow. Before you commit the workflow, run `freshpin audit .github/workflows` so its actions are current.
+If GitHub Actions is unavailable, you can upload from your machine:
+
+```bash
+rm -rf dist && uv build
+```
+
+```bash
+uvx twine check --strict dist/*
+```
+
+```bash
+uv publish --token "pypi-REAL-TOKEN-HERE"
+```
+
+For the very first upload the token's scope must be *Entire account*. Replace it with a token scoped to `freshpin` right afterwards. Files uploaded this way have no attestations.
 
 ## Troubleshooting
 
 | Error | Cause / fix |
 |---|---|
-| `400 File already exists` | PyPI never accepts the same version twice, even after you delete it. Bump the version and rebuild. |
-| `403 Invalid or non-existent authentication` | Wrong index for the token (TestPyPI and PyPI tokens are separate), or the token was revoked. |
+| `invalid-publisher: valid token, but no corresponding publisher` | The pending publisher on PyPI doesn't match the workflow exactly. Check owner `chetanxrathore`, repository `freshpin`, workflow `release.yml`, environment `pypi`. |
+| Publish job waits forever | The `pypi` environment has a required reviewer. Approve the deployment in the run's page. |
+| *Check tag matches package version* fails | The tag (for example `v0.2.0`) doesn't match `__version__`. Delete the tag (`git tag -d v0.2.0`, `git push origin :refs/tags/v0.2.0`), fix the version, commit, and tag again. |
+| Publish succeeds but nothing new appears on PyPI | `skip-existing` is on, so a version that is already on PyPI is silently skipped. PyPI never accepts the same version twice, even after you delete it. Bump the version. |
+| `gh release create` says the release already exists | A release for that tag was created by hand. Delete it on GitHub, then re-run the failed job. |
+| `403 Invalid or non-existent authentication` (manual upload) | Wrong index for the token (TestPyPI and PyPI tokens are separate), or the token was revoked. |
 | `The name 'freshpin' is too similar to an existing project` | PyPI rejected the name. On 2026-11-26, `freshpin` was unused on PyPI, TestPyPI, npm, crates.io and Homebrew. If this happens, pick a new name: replace `freshpin` and `FRESHPIN` everywhere, and rename `src/freshpin`, `skills/freshpin` and `skills/freshpin/scripts/freshpin.py`. |
 | Plugin installs but the hook does nothing | The hook needs a Python 3.9+; `hooks/freshpin-hook.sh` tries `python3`, `/usr/bin/python3` and `python3.X`. Run it by hand with `FRESHPIN_HOOK_DEBUG=1` to see errors. |

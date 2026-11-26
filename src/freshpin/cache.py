@@ -21,7 +21,9 @@ from typing import Any
 
 DEFAULT_TTL_SECONDS = 6 * 60 * 60
 CACHE_FILENAME = "cache.json"
-_SCHEMA_VERSION = 1
+# Bump when cached registry data changes shape, so stale answers are never reused.
+# 2: GitHub entries carry the repository's floating refs ("floating", "refs_complete").
+_SCHEMA_VERSION = 2
 
 
 def default_cache_dir() -> Path:

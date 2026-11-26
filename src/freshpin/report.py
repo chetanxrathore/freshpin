@@ -62,7 +62,7 @@ def resolution_hints(res: Resolution) -> list[str]:
     hints: list[str] = []
     d = res.details
     if res.ecosystem == "gha" and res.version:
-        hints.append(f"uses: {res.name}@{d.get('major_tag') or res.version}")
+        hints.append(f"uses: {res.name}@{d.get('uses_ref') or res.version}")
     elif res.ecosystem == "eol" and res.version:
         cycle = d.get("cycle")
         lts = " LTS" if d.get("lts") else ""

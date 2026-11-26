@@ -44,8 +44,10 @@ from freshpin.registries.endoflife import (
 )
 from freshpin.registries.github_actions import (
     GitHubActionsRegistry,
-    major_tag,
+    floating_refs,
+    parse_branch_refs,
     parse_tag_refs,
+    usable_ref,
 )
 from freshpin.registries.npm import NpmRegistry
 from freshpin.registries.pypi import PyPIRegistry
@@ -300,7 +302,9 @@ def test_gha_token_free_path_is_default(fake_http: FakeHttp) -> None:
     data = GitHubActionsRegistry().fetch("actions/checkout", fake_http)
     assert data["version"] == "v5.0.0"
     assert data["details"]["source"] == "release (web)"
-    assert data["details"]["major_tag"] == "v5"
+    assert data["details"]["uses_ref"] == "v5"
+    assert data["details"]["floating"] == ["v1", "v2", "v3", "v4", "v5"]
+    assert data["details"]["refs_complete"] is True
     # annotated tag: the peeled commit is what a SHA pin must point at
     assert data["details"]["sha"] == sha_of("v5.0.0", peeled=True)
     assert not any("api.github.com" in url for url in fake_http.calls)
@@ -371,10 +375,58 @@ def test_parse_tag_refs() -> None:
     assert parse_tag_refs("001e# service=git-upload-pack\n0000") == {}
 
 
-def test_major_tag() -> None:
-    assert major_tag("v5.0.1") == "v5"
-    assert major_tag("2.3.0") == "2"
-    assert major_tag("nightly") == "nightly"
+def test_usable_ref_prefers_the_least_precise_ref_that_exists() -> None:
+    assert usable_ref("v5.0.1", {"v4", "v5", "v5.0.1"}) == "v5"
+    assert usable_ref("v5.0.1", {"v5.0", "v5.0.1"}) == "v5.0"
+    assert usable_ref("2.3.0", {"2", "2.3.0"}) == "2"
+    # no floating ref published: only the release tag itself is safe to suggest
+    assert usable_ref("v1.14.3", {"v1.14.3", "release/v1"}) == "v1.14.3"
+    assert usable_ref("v1.14.3", set()) == "v1.14.3"
+    # tags that are not a plain version are never shortened
+    assert usable_ref("codeql-bundle-v2.23.3", {"codeql-bundle-v2"}) == "codeql-bundle-v2.23.3"
+    assert usable_ref("v2.0.0-rc.1", {"v2"}) == "v2.0.0-rc.1"
+    assert usable_ref("nightly", {"nightly"}) == "nightly"
+
+
+def test_floating_and_branch_refs() -> None:
+    names = ["v10", "v2", "v2.1", "v2.1.0", "release/v1", "main", "V3", "v1.2.3-rc"]
+    assert floating_refs(names) == ["v2", "v2.1", "V3", "v10"]
+    text = (
+        "0000" + "003f" + "a" * 40 + " refs/heads/v1\n" + "0040" + "b" * 40 + " refs/heads/main\n"
+    )
+    assert parse_branch_refs(text) == {"v1", "main"}
+
+
+def test_gha_repository_without_floating_tags(fake_http: FakeHttp) -> None:
+    """pypa/gh-action-pypi-publish has no ``v1`` tag; suggesting ``@v1`` breaks the workflow."""
+    data = GitHubActionsRegistry().fetch("pypa/gh-action-pypi-publish", fake_http)
+    assert data["version"] == "v1.14.3"
+    assert data["details"]["uses_ref"] == "v1.14.3"
+    assert data["details"]["floating"] == []
+    assert data["details"]["refs_complete"] is True
+
+
+def test_gha_major_published_as_a_branch(fake_http: FakeHttp) -> None:
+    data = GitHubActionsRegistry().fetch("ruby/setup-ruby", fake_http)
+    assert data["details"]["uses_ref"] == "v1"
+    assert data["details"]["floating"] == ["v1"]
+
+
+def test_gha_rest_tag_list_is_marked_incomplete() -> None:
+    routes = github_repo("a/b", "v2.0.0", ["v1", "v1.0.0", "v2.0.0"])
+    routes["https://github.com/a/b.git/info/refs?service=git-upload-pack"] = HttpError("down")
+    details = GitHubActionsRegistry().fetch("a/b", FakeHttp(routes))["details"]
+    assert details["refs_complete"] is False  # no branches, at most 100 tags
+    assert details["uses_ref"] == "v2.0.0" and details["floating"] == ["v1"]
+
+
+def test_gha_without_any_tag_list_suggests_the_release_tag() -> None:
+    routes = github_repo("a/b", "v2.0.0", ["v2", "v2.0.0"])
+    routes["https://github.com/a/b.git/info/refs?service=git-upload-pack"] = HttpError("down")
+    routes["https://api.github.com/repos/a/b/tags?per_page=100"] = HttpError("down")
+    details = GitHubActionsRegistry().fetch("a/b", FakeHttp(routes))["details"]
+    assert details["uses_ref"] == "v2.0.0" and details["floating"] == []
+    assert details["refs_complete"] is False
 
 
 # --- endoflife.date -----------------------------------------------------------------------

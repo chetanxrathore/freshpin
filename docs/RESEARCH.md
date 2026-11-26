@@ -6,6 +6,7 @@
 > - **Agent eval:** the A/B suite in `evals/` replaces the TODO stub. Its results are in `docs/VALIDATION.md`.
 > - **Docker OS variants:** tags with retired OS variants (`-buster`, `-focal`, `alpine3.14`) are modernised and verified on Docker Hub.
 > - **Database majors:** these upgrades now carry a data-migration warning.
+> - **GitHub Action refs:** a suggested `uses:` ref must exist as a tag or branch. Actions that publish no floating major tag get the full tag (`astral-sh/setup-uv@v10.4.0`), and a non-existent `@v1` is flagged.
 > - **Docs:** the README and skill fallback tables no longer point at the rate-limited GitHub API.
 >
 > The remaining items are tracked in [ROADMAP.md](../ROADMAP.md). The local paths cited below refer to the maintainer's working copy; the corresponding files are `validation/results/` in this repository.

@@ -295,17 +295,47 @@ def _evaluate_constraint(
     )
 
 
+def _gha_suggestion(
+    spec: str, precision: int, latest: Version, latest_raw: str, res: Resolution
+) -> str:
+    """``latest`` at ``precision`` (``v3`` -> ``v7``), but only as a ref that exists.
+
+    Not every action publishes floating ``vN`` tags, so when ``v7`` (or ``v7.0``) is not a
+    tag or branch of the repository, the next more precise ref is used, down to the release
+    tag itself. A ref is only shortened when the resolver saw it exist.
+    """
+    known = res.details.get("floating")
+    floating = {str(name) for name in known} if isinstance(known, list) else set()
+    prefix = "v" if spec[:1] in ("v", "V") else ""
+    for p in range(max(1, precision), latest.precision):
+        candidate = prefix + truncate(latest, p).raw
+        if candidate in floating:
+            return candidate
+    return latest_raw
+
+
+def _gha_missing(ref: DependencyRef, current: Version, res: Resolution) -> bool:
+    """True when a floating ref like ``@v1`` is neither a tag nor a branch of the repository."""
+    if ref.sha or current.precision > 2 or res.details.get("refs_complete") is not True:
+        return False
+    known = res.details.get("floating")
+    return isinstance(known, list) and ref.spec not in {str(name) for name in known}
+
+
 def _evaluate_gha(ref: DependencyRef, res: Resolution, latest: Version, level: Bump) -> Finding:
     latest_raw = res.version or latest.raw
     current = parse_version(ref.spec)
     if current is None:
         return Finding(ref, "unpinned", latest=latest_raw, note=f"ref {ref.spec!r} is a branch")
+    new_ref = _gha_suggestion(ref.spec, current.precision, latest, latest_raw, res)
+    if _gha_missing(ref, current, res):
+        # Reported at every --level: GitHub cannot resolve the action, so the job never runs.
+        note = f"{ref.spec} is not a tag or branch of {ref.name}, so the job fails to start"
+        return Finding(ref, "outdated", latest=latest_raw, suggested=ref.render(new_ref), note=note)
     target = truncate(latest, current.precision)
     bump = bump_kind(current, target)
     if not meets_level(bump, level):
         return Finding(ref, "ok", latest=latest_raw, bump=bump)
-    prefix = "v" if ref.spec[:1] in ("v", "V") else ""
-    new_ref = prefix + target.raw
     if ref.sha:
         sha = res.details.get("sha")
         pin = sha if isinstance(sha, str) and sha else f"<commit SHA of {latest_raw}>"

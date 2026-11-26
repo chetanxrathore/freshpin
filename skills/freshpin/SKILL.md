@@ -17,7 +17,7 @@ Your training data is months or years old. Versions you remember, like `actions/
    ```
 
 2. **Use the versions it returns.** Keep the constraint style the project already uses (`>=`, `^`, `~=`, exact pins), but base it on the resolved version.
-   - GitHub Actions: use the major tag it prints (`uses: actions/checkout@v7`). If the repo pins actions by commit SHA, keep doing that and put the version in a comment. `freshpin audit` prints the exact SHA to pin.
+   - GitHub Actions: use exactly the ref it prints. That is usually the major tag (`uses: actions/checkout@v7`), but some actions publish no major tag, and then it prints the full tag (`uses: astral-sh/setup-uv@v10.4.0`). Never shorten it. If the repo pins actions by commit SHA, keep doing that and put the version in a comment. `freshpin audit` prints the exact SHA to pin.
    - Docker images: use the `docker <image>:<tag>` hint (for example `postgres:19`, `python:3.15-slim`). These tags have been checked on Docker Hub. Keep the variant suffix the project already uses (`-slim`, `-alpine`), but not a retired OS release (`-buster`, `-focal`); the audit suggests a current one.
    - Runtimes with LTS lines (Node.js, Ubuntu, MySQL, Temurin) resolve to the newest **LTS** release. Other runtimes resolve to the newest supported release.
 3. **Before you finish**, audit what you changed and fix every line it reports:
@@ -47,7 +47,7 @@ If the CLI is unavailable and you cannot install it, query the registries direct
 | PyPI | `https://pypi.org/pypi/<pkg>/json` | `info.version` |
 | npm | `https://registry.npmjs.org/<pkg>/latest` | `version` |
 | crates.io | `https://crates.io/api/v1/crates/<crate>` | `crate.max_stable_version` |
-| GitHub Action | `https://github.com/<owner>/<repo>/releases/latest` (redirects to the tag), or `git ls-remote --tags https://github.com/<owner>/<repo>` | tag in the redirect URL; highest stable tag |
+| GitHub Action | `https://github.com/<owner>/<repo>/releases/latest` (redirects to the tag), or `git ls-remote --tags https://github.com/<owner>/<repo>` | tag in the redirect URL; highest stable tag. Use the short `vN` only if `git ls-remote` lists `refs/tags/vN` or `refs/heads/vN`; otherwise use the full tag |
 | Runtime / DB / OS | `https://endoflife.date/api/<product>.json` | first non-EOL cycle (prefer `lts`) |
 
 ## Query syntax

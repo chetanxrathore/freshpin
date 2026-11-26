@@ -5,9 +5,9 @@ All results below were measured on **2026-11-26** against freshpin 0.1.0. They c
 | Question | Method | Result |
 |---|---|---|
 | Does it change what an AI agent writes? | A/B `claude plugin eval`: the same prompts with and without the plugin, deterministic graders | **With freshpin: 39/39 checks pass (100%). Without: 0/39.** The skill fired in 6/6 runs. |
-| Are its answers correct? | Compared with independent sources of truth | **96/96 versions match; 43/43 suggested Docker tags exist** |
+| Are its answers correct? | Compared with independent sources of truth | **97/97 versions match; 43/43 suggested Docker tags and 22/22 suggested `uses:` refs exist** |
 | Does it survive real projects? | Audited 18 popular open-source repositories | **12,135 declarations in 1,321 files: 0 crashes, 0 parse errors; 78/78 Docker suggestions verified** |
-| Is the code sound? | Offline unit and integration tests, ruff, `mypy --strict`, every supported Python | **307 tests pass on Python 3.9–3.15; 94% branch coverage** |
+| Is the code sound? | Offline unit and integration tests, ruff, `mypy --strict`, every supported Python | **317 tests pass on Python 3.9–3.15; 94% branch coverage** |
 | Is the plugin well formed? | `claude plugin validate . --strict` | **Passes with nothing to report** |
 
 ---
@@ -82,9 +82,10 @@ Total eval spend across all four rounds: $3.45.
 | PyPI | `/pypi/<pkg>/json` | PEP 691 simple index + reference `packaging` library | 25 | 25 |
 | npm | `/<pkg>/latest` (+ dist-tags when `latest` is a pre-release) | `npm view <pkg> dist-tags` | 25 | 25 |
 | crates.io | API `max_stable_version` | sparse index `index.crates.io` | 20 | 20 |
-| GitHub Actions | `releases/latest` redirect + git refs | `git ls-remote --tags`, highest semver | 20 | 20 |
+| GitHub Actions | `releases/latest` redirect + git refs | `git ls-remote --tags`, highest semver | 22 | 22 |
 | Runtimes | endoflife.date (LTS-aware) | python.org, nodejs.org (LTS), go.dev, static.rust-lang.org, postgresql.org | 5 | 5 |
 | Docker | suggested tags | Docker Hub tag API returns 200 | 43 | 43 |
+| `uses:` refs | suggested ref (`@v7`, or the full tag) | `git ls-remote` lists it as a tag or branch | 22 | 22 |
 
 ```bash
 uv run --with packaging python validation/accuracy.py --markdown validation/results/accuracy.md
@@ -99,6 +100,17 @@ The **first** run of this harness found three defects that the fixture tests cou
   - Fixed: suggested tags are verified on Docker Hub, with a fallback to the full version (`9.5.7`).
 - **npm pre-releases:** `latest` pointed at a release candidate (`prisma 8.0.0-rc.35`).
   - Fixed with stable-only resolution through npm dist-tags (`7.10.1`).
+
+**Writing freshpin's own release workflow exposed a fourth defect.** freshpin suggested a floating major tag (`@v10`) for every action, but not every action publishes one:
+
+- astral-sh/setup-uv stopped publishing them after `v7`.
+- pypa/gh-action-pypi-publish has only full tags and `release/v1` branches.
+- ruby/setup-ruby publishes `v1` as a branch.
+
+So 2 of the 22 suggested refs did not exist (`astral-sh/setup-uv@v10` and `pypa/gh-action-pypi-publish@v1`), and a workflow that used them would fail before any step ran. For the same reason, an agent's habitual `@v1` was reported as "ok".
+
+- Fixed: freshpin now suggests the least precise tag or branch that exists (`astral-sh/setup-uv@v10.4.0`). A floating ref that is neither a tag nor a branch is reported as outdated at every `--level`.
+- The accuracy check now verifies each suggested ref with `git ls-remote`: 22/22, up from 20/22 with the old logic.
 
 Full per-package results: [`validation/results/accuracy.md`](../validation/results/accuracy.md).
 
@@ -153,9 +165,9 @@ uv run pytest -v
 |---|---|
 | ruff (with security rules) | clean |
 | `mypy --strict` (package, hook, launcher) | clean, 23 files |
-| pytest | 307 passed: versioning 74, cache 12, registries 71, auditors 100, CLI 22, hook 28. All offline; the network is blocked in tests. |
+| pytest | 317 passed: versioning 74, cache 13, registries 76, auditors 103, CLI 23, hook 28. All offline; the network is blocked in tests. |
 | Branch coverage | 94% |
-| Python 3.9.6 / 3.10.20 / 3.11.6 / 3.12.13 / 3.13.5 / 3.14.5 / 3.15.0 | 307/307 on each |
+| Python 3.9.6 / 3.10.20 / 3.11.6 / 3.12.13 / 3.13.5 / 3.14.5 / 3.15.0 | 317/317 on each |
 | Wheel / sdist | build; `twine check --strict` passes; zero runtime dependencies; `Requires-Python: >=3.9` |
 | `claude plugin validate . --strict` | passes, nothing to report |
 

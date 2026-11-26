@@ -99,7 +99,7 @@ The goal is to answer the strongest objection from security vendors and classic 
 |---|---|---|
 | 24 | **Published benchmark** | Run the `evals/` A/B suite across several models every release and publish the score deltas. This would be the first public measurement for GitHub Actions and Docker staleness; no study measures those today. |
 | 25 | Nightly live-accuracy CI | `validation/accuracy.py` against independent sources. Fail on any mismatch or unpublished Docker tag. |
-| 26 | Release provenance | PyPI Trusted Publishing + attestations, signed tags, SBOM. |
+| 26 | Release provenance | PyPI Trusted Publishing with PEP 740 and GitHub build-provenance attestations is in place (`.github/workflows/release.yml`). Still to do: signed tags and an SBOM. |
 | 27 | Docs site and listing in the Claude Code plugin directory | Use the icon and validator-clean manifest already in place. |
 | 28 | Caching upgrades | ETags / `If-None-Match` and a shared, opt-in team cache. Strictly no telemetry. |
 
@@ -119,7 +119,7 @@ These areas already have strong owners. freshpin should integrate with them rath
 - **The newest stable version is recommended without a release-age cooldown or vulnerability check.** Planned for v0.2, items 1 and 2.
 - **Stale floors on libraries:** a lower bound a breaking release behind (`packaging>=20`) is reported by default. Libraries should use `--no-floor-check`.
 - **Docker coverage:** only images that map to an endoflife.date product are evaluated (about 60 images). Other images are listed as skipped.
-- **Registry coverage:** tag existence is verified on Docker Hub only; other registries are not checked.
+- **Registry coverage:** suggested tags are verified to exist on Docker Hub, and suggested GitHub Action refs against the repository's tags and branches. Other registries are not checked.
 - **GitHub releases:** "latest" follows the repository's own *latest release* marker. If a repository never marks one, the highest semver tag is used.
 - **Hook coverage:** `Write`/`Edit`/`MultiEdit` and `Bash` are audited. Bash covers file writes, plus `install`/`add` commands that edit a manifest. Not yet covered:
   - `pip install x==1.0` with no manifest

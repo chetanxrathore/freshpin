@@ -10,13 +10,19 @@ without a token) is exhausted:
 
 Either path falls back to the other. The tag list also yields the commit SHA of the chosen
 tag, so SHA-pinned workflows get an exact replacement.
+
+The ref list also says which *floating* refs exist. Most actions publish a ``v5`` tag that
+follows the latest ``v5.x.y``, but not all: ``pypa/gh-action-pypi-publish`` has only full
+tags and a ``release/v1`` branch, and ``ruby/setup-ruby`` publishes ``v1`` as a branch. So
+``details["uses_ref"]`` is the least precise ref that actually exists, and
+``details["floating"]`` lists every ``vN``/``vN.M`` tag or branch for the auditor to check.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable
+from collections.abc import Callable, Collection, Iterable
 from typing import Any, ClassVar
 from urllib.parse import unquote
 
@@ -33,6 +39,8 @@ from freshpin.versioning import max_version, parse_version
 
 _REPO_RE = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REF_RE = re.compile(r"([0-9a-f]{40}) refs/tags/([^\s\x00^]+)(\^\{\})?")
+_HEAD_RE = re.compile(r"[0-9a-f]{40} refs/heads/([^\s\x00]+)")
+_FLOATING_RE = re.compile(r"^[vV]?\d+(?:\.\d+)?$")
 API = "https://api.github.com"
 WEB = "https://github.com"
 
@@ -52,13 +60,32 @@ def github_headers() -> dict[str, str]:
     return headers
 
 
-def major_tag(tag: str) -> str:
-    """``v5.0.1`` -> ``v5``; ``2.3.0`` -> ``2`` (the floating tag most actions publish)."""
+def usable_ref(tag: str, available: Collection[str]) -> str:
+    """The least precise ref for ``tag`` that exists in ``available``.
+
+    ``v5.0.1`` -> ``v5`` when the repository publishes a ``v5`` tag or branch, else
+    ``v5.0`` if that exists, else ``v5.0.1`` itself (a release tag always exists).
+    """
     parsed = parse_version(tag)
     if parsed is None:
         return tag
-    prefix = "v" if tag[:1] in ("v", "V") else ""
-    return f"{prefix}{parsed.major}"
+    prefix = tag[:1] if tag[:1] in ("v", "V") else ""
+    written = parsed.segments or tuple(str(p) for p in parsed.release)
+    if tag != prefix + ".".join(written):  # "codeql-bundle-v2.23.3", "v2.0.0-rc.1"
+        return tag
+    for n in range(1, len(written)):
+        candidate = prefix + ".".join(written[:n])
+        if candidate in available:
+            return candidate
+    return tag
+
+
+def floating_refs(names: Iterable[str]) -> list[str]:
+    """The ``vN`` / ``vN.M`` refs (tags or branches) that ``uses:`` can float on."""
+    found = {name for name in names if _FLOATING_RE.match(name)}
+    return sorted(
+        found, key=lambda name: (tuple(int(p) for p in name.lstrip("vV").split(".")), name)
+    )
 
 
 def parse_tag_refs(text: str) -> dict[str, str]:
@@ -72,6 +99,11 @@ def parse_tag_refs(text: str) -> dict[str, str]:
         if peeled or tag not in refs:
             refs[tag] = sha
     return refs
+
+
+def parse_branch_refs(text: str) -> set[str]:
+    """Branch names from a git ref advertisement (``ruby/setup-ruby`` floats ``v1`` on one)."""
+    return set(_HEAD_RE.findall(text))
 
 
 def _stable_tag(tag: str | None) -> str | None:
@@ -135,13 +167,17 @@ class GitHubActionsRegistry(Registry):
                 last_error = exc
         raise last_error or RegistryError("no release lookup succeeded")
 
-    def _tags(self, name: str, http: HttpClient) -> dict[str, str]:
-        """``{tag: sha}`` from git smart-HTTP; falls back to the REST API tag list."""
+    def _refs(self, name: str, http: HttpClient) -> tuple[dict[str, str], set[str] | None]:
+        """``({tag: sha}, branches)`` from git smart-HTTP.
+
+        Falls back to the REST API tag list, which has no branches and only the newest
+        100 tags; ``branches`` is then ``None`` to say the ref list is incomplete.
+        """
         try:
             text = http.get_text(f"{WEB}/{name}.git/info/refs?service=git-upload-pack")
             refs = parse_tag_refs(text)
             if refs:
-                return refs
+                return refs, parse_branch_refs(text)
         except NotFoundError:
             raise
         except HttpError:
@@ -154,7 +190,7 @@ class GitHubActionsRegistry(Registry):
             sha = as_str(as_dict(entry.get("commit")).get("sha"))
             if tag:
                 out[tag] = sha or ""
-        return out
+        return out, None
 
     def fetch(self, name: str, http: HttpClient, *, include_pre: bool = False) -> dict[str, Any]:
         if not _REPO_RE.match(name):
@@ -172,8 +208,9 @@ class GitHubActionsRegistry(Registry):
                 raise
             except RegistryError as exc:
                 release_error = exc
+        branches: set[str] | None = None
         try:
-            refs = self._tags(name, http)
+            refs, branches = self._refs(name, http)
         except NotFoundError:
             if tag is None:
                 raise
@@ -188,7 +225,14 @@ class GitHubActionsRegistry(Registry):
             tag = max_version(refs, include_pre=include_pre)
             if tag is None:
                 raise RegistryError("no version-like tags found")
-        details: dict[str, Any] = {"major_tag": major_tag(tag), "source": source}
+        available = set(refs) | (branches or set())
+        details: dict[str, Any] = {
+            "uses_ref": usable_ref(tag, available),
+            "floating": floating_refs(available),
+            # True only when every tag and branch was seen, so a missing ref really is missing
+            "refs_complete": branches is not None,
+            "source": source,
+        }
         if refs.get(tag):
             details["sha"] = refs[tag]
         return {

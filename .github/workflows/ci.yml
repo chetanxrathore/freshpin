@@ -1,0 +1,78 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  lint:
+    name: Lint, types and plugin manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+      - name: ruff
+        run: uv run --locked ruff check src tests hooks skills validation
+      - name: ruff format
+        run: uv run --locked ruff format --check src tests hooks skills
+      - name: mypy --strict
+        run: uv run --locked mypy --strict src/freshpin
+      - uses: actions/setup-node@v7
+        with:
+          node-version: "26"
+      - name: claude plugin validate --strict
+        run: npx --yes @anthropic-ai/claude-code plugin validate . --strict
+
+  test:
+    name: Python ${{ matrix.python-version }} on ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest]
+        # Every version requires-python allows, EOL ones included on purpose.
+        python-version: ["3.9", "3.10", "3.11", "3.12", "3.13", "3.14", "3.15"]  # freshpin: ignore
+        include:
+          # 3.9 on macOS matters most: it is /usr/bin/python3 there, and the only
+          # interpreter Claude Code's sandbox could run during the agent eval.
+          - os: macos-latest
+            python-version: "3.9"  # freshpin: ignore
+          - os: macos-latest
+            python-version: "3.15"
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - name: pytest
+        if: matrix.python-version != '3.9'
+        run: uv run --locked pytest -v
+      # The dev tools need 3.10+, so the lock file only covers 3.10+
+      # ([tool.uv] environments). The package itself supports 3.9.
+      - name: pytest (3.9, outside the dev lock)
+        if: matrix.python-version == '3.9'
+        run: uv run --no-project --with "pytest<9" -- env PYTHONPATH=src python -m pytest -v
+
+  dogfood:
+    # freshpin audits its own workflows and pyproject with live registry data, the way
+    # the README's CI example does. It does not block merges: a new upstream release
+    # should show up as a warning here, not turn every pull request red.
+    name: freshpin audits itself
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+      - name: freshpin audit
+        run: uv run --locked freshpin audit .github pyproject.toml --fail-on-outdated
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

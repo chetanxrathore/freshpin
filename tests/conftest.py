@@ -34,11 +34,16 @@ def sha_of(tag: str, *, peeled: bool = False) -> str:
     return hashlib.sha1(f"{tag}{'^' if peeled else ''}".encode()).hexdigest()  # noqa: S324
 
 
-def git_refs(*tags: str, annotated: tuple[str, ...] = ()) -> str:
-    """A git smart-HTTP ref advertisement (pkt-lines) listing ``tags``."""
+def git_refs(
+    *tags: str, annotated: tuple[str, ...] = (), heads: tuple[str, ...] = ("main",)
+) -> str:
+    """A git smart-HTTP ref advertisement (pkt-lines) listing ``heads`` and ``tags``."""
     out = "001e# service=git-upload-pack\n0000"
     head = f"{sha_of('HEAD')} HEAD\x00multi_ack thin-pack symref=HEAD:refs/heads/main\n"
     out += f"{len(head) + 4:04x}{head}"
+    for branch in heads:
+        line = f"{sha_of(branch)} refs/heads/{branch}\n"
+        out += f"{len(line) + 4:04x}{line}"
     for tag in tags:
         lines = [f"{sha_of(tag)} refs/tags/{tag}\n"]
         if tag in annotated:
@@ -139,17 +144,32 @@ def world() -> dict[str, Any]:
             "crate": {"name": "onlypre", "max_stable_version": None, "max_version": "0.1.0-alpha"}
         },
         # --- GitHub (web redirect + git refs, and the REST API) -------------------------
+        # Like the real repositories, these publish floating major tags (v5 -> v5.x.y).
         **github_repo(
-            "actions/checkout", "v5.0.0", ["v3.6.0", "v4.2.2", "v5.0.0"], annotated=("v5.0.0",)
+            "actions/checkout",
+            "v5.0.0",
+            ["v1", "v2", "v3", "v3.6.0", "v4", "v4.2.2", "v5", "v5.0.0"],
+            annotated=("v5.0.0",),
         ),
-        **github_repo("actions/setup-python", "v6.0.0", ["v5.6.0", "v6.0.0"]),
-        **github_repo("actions/setup-node", "v6.0.0", ["v4.0.2", "v6.0.0"]),
-        **github_repo("actions/cache", "v4.3.0", ["v3.3.2", "v4.3.0"]),
-        **github_repo("docker/build-push-action", "v6.18.0", ["v6.18.0"]),
+        **github_repo("actions/setup-python", "v6.0.0", ["v5", "v5.6.0", "v6", "v6.0.0"]),
+        **github_repo("actions/setup-node", "v6.0.0", ["v4", "v4.0.2", "v5", "v6", "v6.0.0"]),
+        **github_repo("actions/cache", "v4.3.0", ["v3", "v3.3.2", "v4", "v4.3.0"]),
+        **github_repo("docker/build-push-action", "v6.18.0", ["v6", "v6.18.0"]),
         **github_repo(
             "github/codeql-action",
             "codeql-bundle-v2.23.3",
-            ["v3.31.2", "v4.31.2", "codeql-bundle-v2.23.3"],
+            ["v3", "v3.31.2", "v4", "v4.31.2", "codeql-bundle-v2.23.3"],
+        ),
+        # No floating tags at all, only full tags and release branches (like the real one).
+        **github_repo(
+            "pypa/gh-action-pypi-publish",
+            "v1.14.3",
+            ["v1.12.4", "v1.14.3"],
+            heads=("unstable/v1", "release/v1", "release/v1.14"),
+        ),
+        # Floats its major on a branch rather than a tag (like the real ruby/setup-ruby).
+        **github_repo(
+            "ruby/setup-ruby", "v1.270.0", ["v1.269.0", "v1.270.0"], heads=("master", "v1")
         ),
         **github_repo("tagonly/action", None, ["v2.1.0", "v3.0.0-beta.1", "v2.10.0"]),
         # --- Docker Hub: every tag exists unless listed explicitly ----------------------

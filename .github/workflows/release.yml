@@ -1,0 +1,110 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - "pyproject.toml"
+      - "src/freshpin/__init__.py"
+      - ".github/workflows/release.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build sdist and wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: astral-sh/setup-uv@v10.4.0
+      - name: Build
+        run: uv build
+      - name: Check metadata
+        run: uvx twine check --strict dist/*
+      - name: Check tag matches package version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          ls -l dist
+          ls "dist/freshpin-$version-py3-none-any.whl" "dist/freshpin-$version.tar.gz" > /dev/null
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          path: dist
+          if-no-files-found: error
+
+  smoke-test:
+    name: Install wheel (${{ matrix.os }}, py${{ matrix.python-version }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        # Oldest and newest Python that requires-python allows.
+        python-version: ["3.9", "3.15"]  # freshpin: ignore
+    steps:
+      - uses: astral-sh/setup-uv@v10.4.0
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Install from the built wheel only and run the CLI
+        run: uvx --no-index --find-links dist --python ${{ matrix.python-version }} freshpin --version
+      - name: Run as a module
+        run: uvx --no-index --find-links dist --python ${{ matrix.python-version }} --from freshpin python -m freshpin --version
+
+  publish:
+    name: Publish to PyPI
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [build, smoke-test]
+    runs-on: ubuntu-latest
+    environment:
+      name: pypi
+      url: https://pypi.org/p/freshpin
+    permissions:
+      id-token: write # Trusted Publishing + Sigstore signing of the PEP 740 attestations
+      attestations: write # GitHub artifact attestations (`gh attestation verify`)
+      contents: read
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: GitHub build provenance
+        uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: "dist/*"
+      # PyPA's publisher generates a signed PEP 740 provenance attestation for every
+      # file, which PyPI shows as "provenance". The project documents `release/v1`
+      # (a branch); it has no floating `v1` tag.
+      - name: Publish to PyPI with PEP 740 attestations
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          attestations: true
+          skip-existing: true
+
+  github-release:
+    name: GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # create the release and upload the files
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Create the release with the built files
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: >
+          gh release create "$GITHUB_REF_NAME" dist/*
+          --repo "$GITHUB_REPOSITORY"
+          --title "freshpin ${GITHUB_REF_NAME#v}"
+          --generate-notes
+          --verify-tag

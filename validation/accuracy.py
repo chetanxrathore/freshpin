@@ -12,6 +12,7 @@ authority and reports agreement:
   runtimes    freshpin: endoflife.date            truth: python.org, nodejs.org, go.dev,
                                                          static.rust-lang.org, postgresql.org
   Docker      freshpin's suggested tags           truth: Docker Hub tag exists (HTTP 200)
+  `uses:`     freshpin's suggested action refs    truth: `git ls-remote` lists the tag/branch
 
 Needs network access; makes ~150 HTTP requests.
 """
@@ -36,7 +37,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from freshpin.cache import Cache
 from freshpin.registries import Resolver
-from freshpin.registries.base import USER_AGENT
+from freshpin.registries.base import USER_AGENT, Resolution
 
 PYPI = [
     "requests",
@@ -135,6 +136,8 @@ ACTIONS = [
     "dtolnay/rust-toolchain",
     "pnpm/action-setup",
     "aws-actions/configure-aws-credentials",
+    "actions/attest-build-provenance",
+    "ruby/setup-ruby",  # floats its major on a branch, not a tag
 ]
 # Docker images and the tag variants people actually write.
 DOCKER = {
@@ -253,6 +256,20 @@ def truth_github(repo: str) -> str | None:
     return stable_max(tags)
 
 
+def github_ref_exists(repo: str, ref: str) -> bool:
+    """Truth for a suggested ``uses: repo@ref``: git lists it as a tag or a branch."""
+    out = subprocess.run(
+        ["git", "ls-remote", f"https://github.com/{repo}", f"refs/tags/{ref}", f"refs/heads/{ref}"],
+        capture_output=True,
+        text=True,
+        timeout=60,
+        check=False,
+    )
+    if out.returncode != 0:
+        raise RuntimeError(out.stderr.strip() or "git ls-remote failed")
+    return bool(out.stdout.strip())
+
+
 def truth_python() -> str | None:
     data = json.loads(
         get("https://www.python.org/api/v2/downloads/release/?is_published=true&pre_release=false")
@@ -319,9 +336,14 @@ class Row:
 
 
 def compare(
-    ecosystem: str, names: list[str], truth: Callable[[str], str | None], resolver: Resolver
+    ecosystem: str,
+    names: list[str],
+    truth: Callable[[str], str | None],
+    resolver: Resolver,
+    results: dict[tuple[str, str], Resolution] | None = None,
 ) -> list[Row]:
-    results = resolver.resolve_many([(ecosystem, n) for n in names])
+    if results is None:
+        results = resolver.resolve_many([(ecosystem, n) for n in names])
     with ThreadPoolExecutor(max_workers=8) as pool:
         truths = list(pool.map(lambda n: _safe(truth, n), names))
     rows = []
@@ -348,7 +370,8 @@ def main() -> int:
     rows += compare("pypi", PYPI, truth_pypi, resolver)
     rows += compare("npm", NPM, truth_npm, resolver)
     rows += compare("crates", CRATES, truth_crates, resolver)
-    rows += compare("gha", ACTIONS, truth_github, resolver)
+    gha = resolver.resolve_many([("gha", a) for a in ACTIONS])
+    rows += compare("gha", ACTIONS, truth_github, resolver, results=gha)
     runtime_truth = {
         "python": truth_python,
         "nodejs": truth_node_lts,
@@ -382,13 +405,31 @@ def main() -> int:
         exists = list(pool.map(lambda c: _exists(*c), checks))
     docker_rows += [(img, tag, ok) for (img, tag), ok in zip(checks, exists, strict=True)]
 
-    lines = report(rows, docker_rows, time.time() - started)
+    # GitHub: does every `uses:` ref freshpin suggests exist? Not every action publishes a
+    # floating major tag (setup-uv stopped after v7; pypa/gh-action-pypi-publish never did).
+    ref_checks = [
+        (a, str(gha[("gha", a)].details.get("uses_ref") or gha[("gha", a)].version))
+        for a in ACTIONS
+        if gha[("gha", a)].version
+    ]
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        ref_ok = list(pool.map(lambda c: _ref_exists(*c), ref_checks))
+    ref_rows = [(a, r, ok) for (a, r), ok in zip(ref_checks, ref_ok, strict=True)]
+
+    lines = report(rows, docker_rows, ref_rows, time.time() - started)
     print("\n".join(lines))
     if args.markdown:
         args.markdown.write_text("\n".join(lines) + "\n")
     mismatches = sum(r.verdict == "MISMATCH" for r in rows)
-    missing = sum(ok is False for _, _, ok in docker_rows)
+    missing = sum(ok is False for _, _, ok in docker_rows + ref_rows)
     return 1 if (mismatches or missing) else 0
+
+
+def _ref_exists(repo: str, ref: str) -> bool | None:
+    try:
+        return github_ref_exists(repo, ref)
+    except Exception:
+        return None
 
 
 def _exists(image: str, tag: str) -> bool | None:
@@ -399,7 +440,10 @@ def _exists(image: str, tag: str) -> bool | None:
 
 
 def report(
-    rows: list[Row], docker_rows: list[tuple[str, str, bool | None]], elapsed: float
+    rows: list[Row],
+    docker_rows: list[tuple[str, str, bool | None]],
+    ref_rows: list[tuple[str, str, bool | None]],
+    elapsed: float,
 ) -> list[str]:
     out = [f"# freshpin live accuracy check ({time.strftime('%Y-%m-%d %H:%M %Z')})", ""]
     by_eco: dict[str, list[Row]] = {}
@@ -415,9 +459,15 @@ def report(
     bad = [x for x in docker_rows if x[2] is False]
     unk = [x for x in docker_rows if x[2] is None]
     out.append(f"| docker tags exist | {len(docker_rows)} | {len(ok)} | {len(bad)} | {len(unk)} |")
+    r_ok = [x for x in ref_rows if x[2]]
+    r_bad = [x for x in ref_rows if x[2] is False]
+    r_unk = [x for x in ref_rows if x[2] is None]
+    out.append(
+        f"| `uses:` refs exist | {len(ref_rows)} | {len(r_ok)} | {len(r_bad)} | {len(r_unk)} |"
+    )
     out += ["", f"Elapsed: {elapsed:.1f}s", "", "## Differences and gaps", ""]
     diffs = [r for r in rows if r.verdict != "match"]
-    if not diffs and not bad and not unk:
+    if not diffs and not bad and not unk and not r_bad and not r_unk:
         out.append("None.")
     for r in diffs:
         out.append(
@@ -427,6 +477,9 @@ def report(
         out.append(
             f"- docker `{img}:{tag}` {'does not exist on Docker Hub' if okv is False else 'could not be checked'}"
         )
+    for repo, ref, okv in r_bad + r_unk:
+        state = "is not a tag or branch" if okv is False else "could not be checked"
+        out.append(f"- `uses: {repo}@{ref}` {state}")
     out += [
         "",
         "## All results",
@@ -439,6 +492,10 @@ def report(
     out += [
         f"| {i} | {t} | {'yes' if o else ('NO' if o is False else '?')} |"
         for i, t, o in docker_rows
+    ]
+    out += ["", "| Action | Suggested `uses:` ref | Exists |", "|---|---|---|"]
+    out += [
+        f"| {a} | {r} | {'yes' if o else ('NO' if o is False else '?')} |" for a, r, o in ref_rows
     ]
     return out
 

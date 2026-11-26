@@ -1,13 +1,14 @@
-# freshpin live accuracy check (2026-11-26 07:52 GMT)
+# freshpin live accuracy check (2026-11-26 11:44 GMT)
 
 | Ecosystem | Checked | Match | Mismatch | n/a |
 |---|---|---|---|---|
 | pypi | 25 | 25 | 0 | 0 |
 | npm | 25 | 25 | 0 | 0 |
 | crates | 20 | 20 | 0 | 0 |
-| gha | 20 | 20 | 0 | 0 |
+| gha | 22 | 22 | 0 | 0 |
 | eol | 5 | 5 | 0 | 0 |
 | docker tags exist | 43 | 43 | 0 | 0 |
+| `uses:` refs exist | 22 | 22 | 0 | 0 |
 
 Elapsed: 18.7s
 
@@ -42,7 +43,7 @@ None.
 | pypi | scikit-learn | 1.9.1 | 1.9.1 | match |
 | pypi | black | 26.10.1 | 26.10.1 | match |
 | pypi | poetry | 2.5.2 | 2.5.2 | match |
-| pypi | typer | 0.29.2 | 0.29.2 | match |
+| pypi | typer | 0.29.3 | 0.29.3 | match |
 | pypi | rich | 15.0.0 | 15.0.0 | match |
 | npm | react | 19.3.1 | 19.3.1 | match |
 | npm | react-dom | 19.3.1 | 19.3.1 | match |
@@ -51,7 +52,7 @@ None.
 | npm | svelte | 5.59.2 | 5.59.2 | match |
 | npm | @angular/core | 22.3.0 | 22.3.0 | match |
 | npm | typescript | 7.0.2 | 7.0.2 | match |
-| npm | vite | 8.3.8 | 8.3.8 | match |
+| npm | vite | 8.4.0 | 8.4.0 | match |
 | npm | express | 5.3.0 | 5.3.0 | match |
 | npm | @types/node | 26.6.11 | 26.6.11 | match |
 | npm | eslint | 10.15.0 | 10.15.0 | match |
@@ -109,6 +110,8 @@ None.
 | gha | dtolnay/rust-toolchain | v1 | v1 | match |
 | gha | pnpm/action-setup | v6.1.1 | v6.1.1 | match |
 | gha | aws-actions/configure-aws-credentials | v6.3.1 | v6.3.1 | match |
+| gha | actions/attest-build-provenance | v4.2.2 | v4.2.2 | match |
+| gha | ruby/setup-ruby | v1.345.0 | v1.345.0 | match |
 | eol | python | 3.15.2 | 3.15.2 | match |
 | eol | nodejs | 26.13.1 | 26.13.1 | match |
 | eol | go | 1.27.4 | 1.27.4 | match |
@@ -160,3 +163,28 @@ None.
 | perl | 5.44 | yes |
 | fedora | 45 | yes |
 | amazoncorretto | 25 | yes |
+
+| Action | Suggested `uses:` ref | Exists |
+|---|---|---|
+| actions/checkout | v7 | yes |
+| actions/setup-python | v7 | yes |
+| actions/setup-node | v7 | yes |
+| actions/cache | v6 | yes |
+| actions/upload-artifact | v7 | yes |
+| actions/download-artifact | v8 | yes |
+| actions/setup-go | v7 | yes |
+| actions/setup-java | v6 | yes |
+| docker/build-push-action | v7 | yes |
+| docker/login-action | v4 | yes |
+| docker/setup-buildx-action | v4 | yes |
+| astral-sh/setup-uv | v10.4.0 | yes |
+| github/codeql-action | v4 | yes |
+| pypa/gh-action-pypi-publish | v1.14.3 | yes |
+| softprops/action-gh-release | v3 | yes |
+| peaceiris/actions-gh-pages | v4 | yes |
+| codecov/codecov-action | v7 | yes |
+| dtolnay/rust-toolchain | v1 | yes |
+| pnpm/action-setup | v6 | yes |
+| aws-actions/configure-aws-credentials | v6 | yes |
+| actions/attest-build-provenance | v4 | yes |
+| ruby/setup-ruby | v1 | yes |

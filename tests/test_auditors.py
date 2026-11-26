@@ -467,6 +467,66 @@ def test_evaluate_edge_cases() -> None:
     assert evaluate(_ref("runtime", "*", syntax="semver"), ok).status == "unpinned"
 
 
+# --- GitHub Actions refs must exist ---------------------------------------------------------
+
+
+def test_gha_refs_that_do_not_exist_are_flagged(tmp_path: Path) -> None:
+    """An agent's habitual ``@v1`` fails when the action publishes no ``v1`` tag or branch."""
+    wf = tmp_path / ".github" / "workflows" / "release.yml"
+    wf.parent.mkdir(parents=True)
+    wf.write_text(
+        "jobs:\n  release:\n    steps:\n"
+        "      - uses: pypa/gh-action-pypi-publish@v1\n"
+        "      - uses: pypa/gh-action-pypi-publish@v1.12.4\n"
+        "      - uses: pypa/gh-action-pypi-publish@release/v1\n"
+        "      - uses: ruby/setup-ruby@v1\n"
+        "      - uses: actions/checkout@v3\n"
+    )
+    for level in ("minor", "major"):
+        found = by_location(audit_paths([wf], resolver(), today=TODAY, base=tmp_path, level=level))
+        missing = found[".github/workflows/release.yml:4"]
+        assert missing.status == "outdated"  # at every level: the job cannot start
+        assert missing.suggested == "pypa/gh-action-pypi-publish@v1.14.3"
+        assert "v1 is not a tag or branch of pypa/gh-action-pypi-publish" in missing.note
+        assert found[".github/workflows/release.yml:6"].status == "unpinned"
+        assert found[".github/workflows/release.yml:7"].status == "ok"  # v1 is a branch
+        checkout = found[".github/workflows/release.yml:8"]
+        assert checkout.suggested == "actions/checkout@v5"
+    exact = found[".github/workflows/release.yml:5"]
+    assert exact.status == "ok"  # a minor bump is below --level major
+    minor = by_location(audit_paths([wf], resolver(), today=TODAY, base=tmp_path))
+    assert (
+        minor[".github/workflows/release.yml:5"].suggested == "pypa/gh-action-pypi-publish@v1.14.3"
+    )
+
+
+def _gha(version: str, **details: object) -> Resolution:
+    return Resolution("gha", "a/b", "gha:a/b", version=version, details=dict(details))
+
+
+def test_gha_suggestion_falls_back_to_a_ref_that_exists() -> None:
+    # v1 exists but the repository never published a floating v2 tag
+    f = evaluate(_ref("gha", "v1"), _gha("v2.0.0", floating=["v1"], refs_complete=True))
+    assert (f.status, f.suggested, f.bump) == ("outdated", "xv2.0.0", "major")
+    published = _gha("v5.0.1", floating=["v4", "v5", "v5.0"], refs_complete=True)
+    assert evaluate(_ref("gha", "v4"), published).suggested == "xv5"
+    # v4.1 is not in an incomplete ref list: not flagged, and v5.0 is not known to exist
+    partial = _gha("v5.0.1", floating=["v5"], refs_complete=False)
+    f = evaluate(_ref("gha", "v4.1"), partial)
+    assert (f.status, f.suggested, f.note) == ("outdated", "xv5.0.1", "")
+    assert evaluate(_ref("gha", "v4.1.2"), partial).suggested == "xv5.0.1"
+
+
+def test_gha_existence_check_needs_a_complete_ref_list() -> None:
+    # the REST fallback has no branches, so a missing v1 may still be a branch
+    f = evaluate(_ref("gha", "v1"), _gha("v1.14.3", floating=[], refs_complete=False))
+    assert f.status == "ok"
+    # without a ref list only the release tag itself is known to exist
+    unknown = evaluate(_ref("gha", "v3"), _gha("v5.0.0"))
+    assert (unknown.status, unknown.suggested) == ("outdated", "xv5.0.0")
+    assert evaluate(_ref("gha", "v5"), _gha("v5.0.0")).status == "ok"
+
+
 def test_docker_suggestions_are_verified_and_repaired(tmp_path: Path) -> None:
     compose = tmp_path / "docker-compose.yml"
     compose.write_text(
