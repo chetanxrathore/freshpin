@@ -56,6 +56,7 @@ class Version:
     pre: tuple[int, int, str] | None = None
     post: int | None = None
     local: str | None = None
+    segments: tuple[str, ...] = ()  # release components exactly as written ("26", "04")
 
     @property
     def is_prerelease(self) -> bool:
@@ -80,8 +81,8 @@ class Version:
 
     @property
     def base(self) -> str:
-        """The release segment only, e.g. ``1.2.3`` for ``v1.2.3-rc.1``."""
-        return ".".join(str(p) for p in self.release)
+        """The release segment only, e.g. ``1.2.3`` for ``v1.2.3-rc.1`` (``24.04`` stays)."""
+        return ".".join(self.segments or tuple(str(p) for p in self.release))
 
     def _key(self) -> tuple[int, tuple[int, ...], tuple[int, int, str], int]:
         rel = list(self.release)
@@ -120,7 +121,8 @@ def parse_version(text: str) -> Version | None:
     if not m:
         return None
     epoch = int(m.group(1) or 0)
-    release = tuple(int(p) for p in m.group(2).split("."))
+    segments = tuple(m.group(2).split("."))
+    release = tuple(int(p) for p in segments)
     rest = m.group(3)
     pre: tuple[int, int, str] | None = None
     post: int | None = None
@@ -137,7 +139,13 @@ def parse_version(text: str) -> Version | None:
             else:
                 pre = (1, 0, rest.lower())
     return Version(
-        raw=text.strip(), release=release, epoch=epoch, pre=pre, post=post, local=local or None
+        raw=text.strip(),
+        release=release,
+        epoch=epoch,
+        pre=pre,
+        post=post,
+        local=local or None,
+        segments=segments,
     )
 
 
@@ -163,8 +171,10 @@ def truncate(version: Version, precision: int) -> Version:
     """Keep only the first ``precision`` release components (``3.14.2`` -> ``3.14``)."""
     precision = max(1, precision)
     rel = (*version.release, 0, 0, 0)[:precision]
-    text = ".".join(str(p) for p in rel)
-    return Version(raw=text, release=tuple(rel), epoch=version.epoch)
+    written = version.segments or tuple(str(p) for p in version.release)
+    segments = (*written, "0", "0", "0")[:precision]
+    text = ".".join(segments)
+    return Version(raw=text, release=tuple(rel), epoch=version.epoch, segments=segments)
 
 
 def bump_kind(current: Version, latest: Version) -> Bump | None:

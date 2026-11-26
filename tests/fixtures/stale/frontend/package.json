@@ -1,0 +1,21 @@
+{
+  "name": "stale-frontend",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^19.0.0",
+    "next": "14.2.3",
+    "lodash": "~4.17.21",
+    "my-ui": "workspace:*",
+    "legacy": "github:acme/legacy",
+    "old-react": "npm:react@^17.0.2"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "@types/node": "^20.11.0",
+    "vite": "latest"
+  }
+}

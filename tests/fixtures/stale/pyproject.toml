@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling>=1.27.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "stale-app"
+version = "0.1.0"
+description = """
+A multi-line description that mentions [project] and dependencies = ["fake>=1"]
+"""
+requires-python = ">=3.9"
+classifiers = [
+  "Programming Language :: Python :: 3",
+]
+dependencies = [
+  "fastapi>=0.100.0",
+  "pydantic[email]>=1.10,<2",
+  "requests>=2.28",   # fine: allows the latest release
+  "django~=4.2",
+  "numpy==1.26.4; python_version >= '3.9'",
+  "httpx",
+  "mylib @ git+https://github.com/acme/mylib",
+  "uvicorn>=0.30.0",  # freshdeps: ignore
+]
+
+[project.optional-dependencies]
+test = ["pytest>=8.0.0"]
+
+[dependency-groups]
+dev = [
+  {include-group = "test"},
+  "pytest>=9.2.0",
+]
+
+[tool.poetry.dependencies]
+python = "^3.10"
+django = { version = "^4.2", extras = ["argon2"] }

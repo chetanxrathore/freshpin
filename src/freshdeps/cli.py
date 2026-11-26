@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 from typing import TextIO
 
 from freshdeps import __version__
+from freshdeps.auditors import audit_paths
 from freshdeps.cache import Cache, parse_duration
 from freshdeps.registries import (
     DOCKER_ALIASES,
@@ -20,7 +22,15 @@ from freshdeps.registries import (
     parse_query,
 )
 from freshdeps.registries.endoflife import DOCKER_IMAGES, PRODUCT_ALIASES
-from freshdeps.report import FORMATS, dumps, format_resolutions, render_table, use_color, write
+from freshdeps.report import (
+    FORMATS,
+    dumps,
+    format_audit,
+    format_resolutions,
+    render_table,
+    use_color,
+    write,
+)
 
 EXIT_OK = 0
 EXIT_FINDINGS = 1
@@ -98,6 +108,46 @@ def build_parser() -> argparse.ArgumentParser:
     _add_output_options(resolve)
     _add_lookup_options(resolve)
 
+    audit = sub.add_parser(
+        "audit",
+        help="find outdated versions in manifests, workflows and Dockerfiles",
+        description=(
+            "Scans pyproject.toml, requirements*.txt, package.json, Cargo.toml, "
+            ".github/workflows/*.yml, action.yml, Dockerfile and docker-compose files."
+        ),
+    )
+    audit.add_argument("paths", nargs="*", default=["."], metavar="PATH", help="files or dirs")
+    audit.add_argument(
+        "--fail-on-outdated",
+        action="store_true",
+        help="exit with status 1 if anything is outdated (for CI and hooks)",
+    )
+    audit.add_argument(
+        "--level",
+        choices=("major", "minor", "patch"),
+        default="minor",
+        help="smallest version bump to report (default: minor)",
+    )
+    audit.add_argument(
+        "--all", action="store_true", help="also list skipped declarations in the table"
+    )
+    audit.add_argument(
+        "--ignore",
+        action="append",
+        default=[],
+        metavar="NAME",
+        help="ignore a dependency by name or glob (repeatable), e.g. --ignore 'eslint*'",
+    )
+    audit.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="GLOB",
+        help="skip paths matching a glob, relative to the scanned dir (repeatable)",
+    )
+    _add_output_options(audit)
+    _add_lookup_options(audit)
+
     sub.add_parser("cache-clear", help="delete the local version cache")
 
     eco = sub.add_parser("ecosystems", help="list supported ecosystems and aliases")
@@ -117,6 +167,22 @@ def cmd_resolve(args: argparse.Namespace, out: TextIO) -> int:
     results = [next(resolved) if isinstance(s, Query) else s for s in slots]
     write(format_resolutions(results, args.format, color=use_color(out)), out)
     return EXIT_OK if all(r.ok for r in results) else EXIT_FINDINGS
+
+
+def cmd_audit(args: argparse.Namespace, out: TextIO) -> int:
+    report = audit_paths(
+        [Path(p) for p in args.paths],
+        build_resolver(args),
+        level=args.level,
+        ignore=args.ignore,
+        exclude=args.exclude,
+    )
+    write(format_audit(report, args.format, color=use_color(out), show_all=args.all), out)
+    if not report.files and report.errors:
+        return EXIT_USAGE
+    if args.fail_on_outdated and report.outdated:
+        return EXIT_FINDINGS
+    return EXIT_OK
 
 
 def cmd_cache_clear(out: TextIO) -> int:
@@ -173,6 +239,8 @@ def main(argv: Sequence[str] | None = None, out: TextIO | None = None) -> int:
     args = parser.parse_args(argv)
     if args.command == "resolve":
         return cmd_resolve(args, stream)
+    if args.command == "audit":
+        return cmd_audit(args, stream)
     if args.command == "cache-clear":
         return cmd_cache_clear(stream)
     if args.command == "ecosystems":

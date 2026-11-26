@@ -7,10 +7,13 @@ import os
 import re
 import sys
 from collections.abc import Sequence
-from typing import Any, TextIO
+from typing import TYPE_CHECKING, Any, TextIO
 
 from freshdeps.registries.base import Resolution
 from freshdeps.registries.endoflife import DOCKER_IMAGES
+
+if TYPE_CHECKING:
+    from freshdeps.auditors import AuditReport
 
 FORMATS = ("table", "json", "agent")
 
@@ -122,3 +125,77 @@ def write(text: str, stream: TextIO | None = None) -> None:
     out.write(text)
     if text and not text.endswith("\n"):
         out.write("\n")
+
+
+# ---------------------------------------------------------------------------
+# audit
+# ---------------------------------------------------------------------------
+
+
+def _summary_line(report: AuditReport) -> str:
+    counts = report.counts()
+    parts = [f"{n} {status}" for status, n in counts.items() if n]
+    files = len(report.files)
+    detail = ", ".join(parts) if parts else "nothing to check"
+    return f"{len(report.findings)} checked in {files} file{'s' if files != 1 else ''}: {detail}"
+
+
+def format_audit_agent(report: AuditReport) -> str:
+    """Ultra-compact, instruction-style output for LLM agents."""
+    outdated = report.outdated
+    lines: list[str] = []
+    if outdated:
+        lines.append(
+            f"freshdeps: {len(outdated)} outdated of {len(report.findings)} checked"
+            " - upgrade to the latest stable versions:"
+        )
+        for f in outdated:
+            tail = f" [{f.bump}]" if f.bump else ""
+            if f.note:
+                tail += f" {f.note}"
+            lines.append(
+                f"{f.location(report.base)} | {f.current} -> {f.suggested or f.latest}{tail}"
+            )
+    else:
+        lines.append(f"freshdeps: OK - {len(report.findings)} checked, none outdated.")
+    errors = [f for f in report.findings if f.status == "error"]
+    if errors:
+        shown = "; ".join(f"{f.ref.ecosystem}:{f.ref.name} {f.note}" for f in errors[:5])
+        more = f" (+{len(errors) - 5} more)" if len(errors) > 5 else ""
+        lines.append(f"unverified: {shown}{more}")
+    lines.extend(f"error: {e}" for e in report.errors)
+    return "\n".join(lines)
+
+
+_STATUS_COLOR = {"outdated": "red", "error": "yellow", "ok": "green", "unpinned": "cyan"}
+
+
+def format_audit(
+    report: AuditReport, fmt: str, *, color: bool = False, show_all: bool = False
+) -> str:
+    if fmt == "json":
+        return json.dumps(report.to_dict(), indent=2)
+    if fmt == "agent":
+        return format_audit_agent(report)
+    rows: list[list[str]] = []
+    for f in report.findings:
+        if f.status == "skipped" and not show_all:
+            continue
+        status = f.status + (f" ({f.bump})" if f.status == "outdated" and f.bump else "")
+        status = paint(status, _STATUS_COLOR.get(f.status, "dim"), color)
+        detail = f"-> {f.suggested}" if f.status == "outdated" and f.suggested else ""
+        if f.note:
+            detail = f"{detail}  {f.note}".strip()
+        rows.append([f.location(report.base), f.current, f.latest or "?", status, detail])
+    parts = []
+    if rows:
+        parts.append(
+            render_table(
+                ["LOCATION", "CURRENT", "LATEST", "STATUS", "ACTION / NOTE"], rows, color=color
+            )
+        )
+    elif not report.findings:
+        parts.append("No supported dependency declarations found.")
+    parts.append(paint(_summary_line(report), "bold", color))
+    parts.extend(paint(f"error: {e}", "yellow", color) for e in report.errors)
+    return "\n".join(parts)
