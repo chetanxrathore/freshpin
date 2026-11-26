@@ -1,0 +1,107 @@
+[build-system]
+requires = ["hatchling>=1.33.0"]
+build-backend = "hatchling.build"
+
+[project]
+name = "freshdeps"
+version = "0.1.0"
+description = "Stop AI coding agents from writing stale versions: resolve and audit the latest stable libraries, GitHub Actions, Docker images, databases and runtimes."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE-MIT"]
+authors = [{ name = "freshdeps contributors" }]
+keywords = [
+  "dependencies",
+  "versions",
+  "claude-code",
+  "ai-agents",
+  "pypi",
+  "npm",
+  "crates",
+  "github-actions",
+  "docker",
+  "endoflife",
+]
+classifiers = [
+  "Development Status :: 4 - Beta",
+  "Environment :: Console",
+  "Intended Audience :: Developers",
+  "Operating System :: OS Independent",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.10",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+  "Programming Language :: Python :: 3.15",
+  "Topic :: Software Development :: Build Tools",
+  "Topic :: Software Development :: Quality Assurance",
+  "Typing :: Typed",
+]
+# Zero runtime dependencies: stdlib only, so it installs instantly anywhere.
+dependencies = []
+
+[project.scripts]
+freshdeps = "freshdeps.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=9.2.0",
+  "ruff>=0.17.6",
+  "mypy>=2.4.1",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/freshdeps"]
+
+[tool.hatch.build.targets.sdist]
+include = [
+  "src/freshdeps",
+  "tests",
+  "skills",
+  "hooks",
+  ".claude-plugin",
+  "README.md",
+  "CONTRIBUTING.md",
+  "LICENSE-MIT",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+src = ["src", "tests", "hooks"]
+
+[tool.ruff.lint]
+select = [
+  "E",    # pycodestyle errors
+  "W",    # pycodestyle warnings
+  "F",    # pyflakes
+  "I",    # isort
+  "B",    # flake8-bugbear
+  "UP",   # pyupgrade
+  "SIM",  # flake8-simplify
+  "C4",   # flake8-comprehensions
+  "RUF",  # ruff-specific
+  "PTH",  # prefer pathlib
+  "S",    # bandit (security)
+]
+ignore = [
+  "S310", # urlopen on registry URLs we construct ourselves (https only, validated)
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101", "S105", "S106", "S603"]
+"hooks/**" = ["S603"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_unreachable = true
+mypy_path = "src"
+files = ["src/freshdeps"]
