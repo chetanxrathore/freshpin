@@ -3,13 +3,15 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 from collections.abc import Callable, Iterator, Mapping
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 import pytest
 
-from freshdeps.registries.base import HttpClient, NotFoundError
+from freshpin.registries.base import HttpClient, NotFoundError
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -27,6 +29,43 @@ def pypi(*versions: str, yanked: tuple[str, ...] = (), summary: str = "pkg") -> 
     }
 
 
+def sha_of(tag: str, *, peeled: bool = False) -> str:
+    """Deterministic fake commit SHA for a tag (``peeled`` = the commit behind an annotated tag)."""
+    return hashlib.sha1(f"{tag}{'^' if peeled else ''}".encode()).hexdigest()  # noqa: S324
+
+
+def git_refs(*tags: str, annotated: tuple[str, ...] = ()) -> str:
+    """A git smart-HTTP ref advertisement (pkt-lines) listing ``tags``."""
+    out = "001e# service=git-upload-pack\n0000"
+    head = f"{sha_of('HEAD')} HEAD\x00multi_ack thin-pack symref=HEAD:refs/heads/main\n"
+    out += f"{len(head) + 4:04x}{head}"
+    for tag in tags:
+        lines = [f"{sha_of(tag)} refs/tags/{tag}\n"]
+        if tag in annotated:
+            lines.append(f"{sha_of(tag, peeled=True)} refs/tags/{tag}^{{}}\n")
+        out += "".join(f"{len(line) + 4:04x}{line}" for line in lines)
+    return out + "0000"
+
+
+@dataclass(frozen=True)
+class Redirect:
+    location: str
+
+
+def github_repo(repo: str, release: str | None, tags: list[str], **kw: Any) -> dict[str, Any]:
+    """Routes for one repository on both the token-free web path and the REST API."""
+    web, api = f"https://github.com/{repo}", f"https://api.github.com/repos/{repo}"
+    routes: dict[str, Any] = {
+        f"{web}/releases/latest": Redirect(
+            f"{web}/releases/tag/{release}" if release else f"{web}/releases"
+        ),
+        f"{web}.git/info/refs?service=git-upload-pack": git_refs(*tags, **kw),
+        f"{api}/releases/latest": {"tag_name": release} if release else NotFoundError("404"),
+        f"{api}/tags?per_page=100": [{"name": t, "commit": {"sha": sha_of(t)}} for t in tags],
+    }
+    return routes
+
+
 def eol_cycle(cycle: str, latest: str, *, eol: str | bool = FUTURE, **extra: Any) -> dict[str, Any]:
     item: dict[str, Any] = {
         "cycle": cycle,
@@ -41,7 +80,6 @@ def eol_cycle(cycle: str, latest: str, *, eol: str | bool = FUTURE, **extra: Any
 
 def world() -> dict[str, Any]:
     """URL -> JSON payload (or an exception instance to raise)."""
-    gh = "https://api.github.com/repos"
     return {
         # --- PyPI ---------------------------------------------------------------
         "https://pypi.org/pypi/fastapi/json": pypi(
@@ -100,24 +138,22 @@ def world() -> dict[str, Any]:
         "https://crates.io/api/v1/crates/onlypre": {
             "crate": {"name": "onlypre", "max_stable_version": None, "max_version": "0.1.0-alpha"}
         },
-        # --- GitHub -----------------------------------------------------------------
-        f"{gh}/actions/checkout/releases/latest": {"tag_name": "v5.0.0", "prerelease": False},
-        f"{gh}/actions/setup-python/releases/latest": {"tag_name": "v6.0.0"},
-        f"{gh}/actions/setup-node/releases/latest": {"tag_name": "v6.0.0"},
-        f"{gh}/actions/cache/releases/latest": {"tag_name": "v4.3.0"},
-        f"{gh}/docker/build-push-action/releases/latest": {"tag_name": "v6.18.0"},
-        f"{gh}/github/codeql-action/releases/latest": {"tag_name": "codeql-bundle-v2.23.3"},
-        f"{gh}/github/codeql-action/tags?per_page=100": [
-            {"name": "v4.31.2"},
-            {"name": "v3.31.2"},
-            {"name": "codeql-bundle-v2.23.3"},
-        ],
-        f"{gh}/tagonly/action/releases/latest": NotFoundError("not found (api.github.com)"),
-        f"{gh}/tagonly/action/tags?per_page=100": [
-            {"name": "v2.1.0"},
-            {"name": "v3.0.0-beta.1"},
-            {"name": "v2.10.0"},
-        ],
+        # --- GitHub (web redirect + git refs, and the REST API) -------------------------
+        **github_repo(
+            "actions/checkout", "v5.0.0", ["v3.6.0", "v4.2.2", "v5.0.0"], annotated=("v5.0.0",)
+        ),
+        **github_repo("actions/setup-python", "v6.0.0", ["v5.6.0", "v6.0.0"]),
+        **github_repo("actions/setup-node", "v6.0.0", ["v4.0.2", "v6.0.0"]),
+        **github_repo("actions/cache", "v4.3.0", ["v3.3.2", "v4.3.0"]),
+        **github_repo("docker/build-push-action", "v6.18.0", ["v6.18.0"]),
+        **github_repo(
+            "github/codeql-action",
+            "codeql-bundle-v2.23.3",
+            ["v3.31.2", "v4.31.2", "codeql-bundle-v2.23.3"],
+        ),
+        **github_repo("tagonly/action", None, ["v2.1.0", "v3.0.0-beta.1", "v2.10.0"]),
+        # --- Docker Hub: every tag exists unless listed explicitly ----------------------
+        "https://hub.docker.com/v2/*": {"name": "tag"},
         # --- endoflife.date -------------------------------------------------------------
         "https://endoflife.date/api/python.json": [
             eol_cycle("3.14", "3.14.2"),
@@ -154,6 +190,7 @@ def world() -> dict[str, Any]:
             eol_cycle("13", "13.1", codename="Trixie"),
             eol_cycle("12", "12.12", codename="Bookworm"),
             eol_cycle("11", "11.11", codename="Bullseye", eol=OLD),
+            eol_cycle("10", "10.13", codename="Buster", eol=OLD),
         ],
         "https://endoflife.date/api/alpine-linux.json": [
             eol_cycle("3.22", "3.22.2"),
@@ -170,6 +207,34 @@ def world() -> dict[str, Any]:
             eol_cycle("1.24", "1.24.10"),
             eol_cycle("1.21", "1.21.13", eol=OLD),
         ],
+        "https://endoflife.date/api/elasticsearch.json": [
+            eol_cycle("8.2", "8.2.3"),
+            eol_cycle("7.17", "7.17.9", eol=OLD),
+        ],
+        "https://endoflife.date/api/memcached.json": [eol_cycle("1.6", "1.6.39")],
+        "https://hub.docker.com/v2/namespaces/library/repositories/elasticsearch/tags/8.2": (
+            NotFoundError("404")
+        ),
+        "https://hub.docker.com/v2/namespaces/library/repositories/memcached/tags/1.6": (
+            NotFoundError("404")
+        ),
+        "https://hub.docker.com/v2/namespaces/library/repositories/memcached/tags/1.6.39": (
+            NotFoundError("404")
+        ),
+        **{
+            f"https://hub.docker.com/v2/namespaces/library/repositories/{image}/tags/{tag}": (
+                NotFoundError("404")
+            )
+            for image, tag in [
+                ("python", "3.14-buster"),
+                ("python", "3.14.2-buster"),
+                ("python", "3.14-focal"),
+                ("python", "3.14.2-focal"),
+                ("node", "24-alpine3.14"),
+                ("node", "24.11.0-alpine3.14"),
+                ("node", "24.11.0-alpine3.22"),
+            ]
+        },
         "https://endoflife.date/api/future.json": [
             {"cycle": "2", "latest": "2.0", "releaseDate": FUTURE, "eol": False},
             eol_cycle("1", "1.9"),
@@ -186,24 +251,39 @@ class FakeHttp(HttpClient):
         self.calls: list[str] = []
         self.headers: list[Mapping[str, str]] = []
 
-    def get_json(self, url: str, headers: Mapping[str, str] | None = None) -> Any:
+    def _route(self, url: str, headers: Mapping[str, str] | None) -> Any:
         self.calls.append(url)
         self.headers.append(dict(headers or {}))
-        if url not in self.routes:
-            raise NotFoundError(f"not found ({url})")
-        value = self.routes[url]
+        if url in self.routes:
+            value = self.routes[url]
+        else:
+            prefixes = [k for k in self.routes if k.endswith("*") and url.startswith(k[:-1])]
+            if not prefixes:
+                raise NotFoundError(f"not found ({url})")
+            value = self.routes[max(prefixes, key=len)]
         if isinstance(value, BaseException):
             raise value
         if callable(value):
             return value()
         return copy.deepcopy(value)
 
+    def get_json(self, url: str, headers: Mapping[str, str] | None = None) -> Any:
+        return self._route(url, headers)
+
+    def get_text(self, url: str, headers: Mapping[str, str] | None = None) -> str:
+        value = self._route(url, headers)
+        return value if isinstance(value, str) else ""
+
+    def get_redirect(self, url: str, headers: Mapping[str, str] | None = None) -> str | None:
+        value = self._route(url, headers)
+        return value.location if isinstance(value, Redirect) else None
+
 
 @pytest.fixture(autouse=True)
 def _isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     """Never touch the real cache, token or network from tests."""
-    monkeypatch.setenv("FRESHDEPS_CACHE_DIR", str(tmp_path / "cache"))
-    monkeypatch.delenv("FRESHDEPS_CACHE_TTL", raising=False)
+    monkeypatch.setenv("FRESHPIN_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.delenv("FRESHPIN_CACHE_TTL", raising=False)
     monkeypatch.delenv("GITHUB_TOKEN", raising=False)
     monkeypatch.delenv("GH_TOKEN", raising=False)
     monkeypatch.setenv("NO_COLOR", "1")
@@ -212,6 +292,7 @@ def _isolated_environment(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> It
         raise AssertionError("tests must not use the real network")
 
     monkeypatch.setattr("urllib.request.urlopen", _no_network)
+    monkeypatch.setattr("urllib.request.OpenerDirector.open", _no_network)
     yield
 
 
@@ -226,9 +307,12 @@ def patch_http(monkeypatch: pytest.MonkeyPatch) -> Callable[..., FakeHttp]:
 
     def install(routes: Mapping[str, Any] | None = None) -> FakeHttp:
         fake = FakeHttp(routes)
-        monkeypatch.setattr(
-            HttpClient, "get_json", lambda self, url, headers=None: fake.get_json(url, headers)
-        )
+        for method in ("get_json", "get_text", "get_redirect"):
+            monkeypatch.setattr(
+                HttpClient,
+                method,
+                lambda self, url, headers=None, _m=method: getattr(fake, _m)(url, headers),
+            )
         return fake
 
     return install

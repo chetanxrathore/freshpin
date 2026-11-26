@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from freshdeps.versioning import (
+from freshpin.versioning import (
     ConstraintError,
     Version,
     assess,
@@ -212,6 +212,13 @@ def test_assess_stale_floor_is_outdated_only_when_breaking() -> None:
     assert not allowed.outdated and allowed.bump == "minor"
 
 
+def test_assess_without_floor_check_is_library_friendly() -> None:
+    stale_floor = parse_pep440(">=4.2")
+    assert assess(stale_floor, v("5.2.8")).outdated
+    assert not assess(stale_floor, v("5.2.8"), floors=False).outdated
+    assert assess(parse_pep440("<5"), v("5.2.8"), floors=False).outdated  # still excludes
+
+
 def test_assess_cap_without_floor() -> None:
     a = assess(parse_pep440("<2"), v("2.11.4"))
     assert a.outdated and a.excludes_latest
@@ -231,6 +238,15 @@ def test_assess_unbounded_and_future_prerelease_pin() -> None:
         ("18.x", "npm", "19.2.0", "19.x"),
         (">=1.10,<2", "pep", "2.11.4", ">=2.11.4"),
         ("0.11", "cargo", "0.13.1", "0.13"),
+        # exact pins always name the full latest version (post-releases included)
+        ("==4.3.post1", "pep", "4.5.post3", "==4.5.post3"),
+        ("==2.28", "pep", "2.32.5", "==2.32.5"),
+        ("14.2.3", "npm", "16.0.1", "16.0.1"),
+        # only the floor is stale: keep the cap that still admits the latest release
+        (">=7.0,<9.0.0", "pep", "8.5.1", ">=8.5,<9.0.0"),
+        (">=2,<4", "pep", "3.5.3", ">=3,<4"),
+        (">=1.0,<11.0", "pep", "10.2.0", ">=10.2,<11.0"),
+        (">=1.2.0 <3", "npm", "2.4.0", ">=2.4.0 <3"),
     ],
 )
 def test_rewrite_spec(spec: str, parser: str, latest: str, expected: str) -> None:

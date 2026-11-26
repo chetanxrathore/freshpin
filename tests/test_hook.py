@@ -16,16 +16,17 @@ from typing import Any
 import pytest
 
 from conftest import FakeHttp
-from freshdeps.cache import Cache
-from freshdeps.registries import Resolver
-from freshdeps.registries.endoflife import EndOfLifeRegistry
+from freshpin import __version__
+from freshpin.cache import Cache
+from freshpin.registries import Resolver
+from freshpin.registries.endoflife import EndOfLifeRegistry
 
 ROOT = Path(__file__).resolve().parent.parent
 HOOK_PATH = ROOT / "hooks" / "check_written_file.py"
 
 
 def load_hook() -> ModuleType:
-    spec = importlib.util.spec_from_file_location("freshdeps_hook", HOOK_PATH)
+    spec = importlib.util.spec_from_file_location("freshpin_hook", HOOK_PATH)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -73,10 +74,10 @@ def test_write_of_stale_file_blocks_with_actionable_reason(
     assert code == 0 and out is not None
     assert out["decision"] == "block"
     reason = out["reason"]
-    assert reason.startswith("freshdeps: 2 outdated of 2 checked")
+    assert reason.startswith("freshpin: 2 outdated of 2 checked")
     assert "Dockerfile:1 | python:3.10-slim -> python:3.14-slim [minor]" in reason
     assert "Dockerfile:3 | postgres:14-alpine -> postgres:18-alpine [major] 14 is EOL" in reason
-    assert "freshdeps: ignore" in reason  # escape hatch is explained
+    assert "freshpin: ignore" in reason  # escape hatch is explained
 
 
 def test_edit_only_reports_lines_just_written(world: FakeHttp, dockerfile: Path) -> None:
@@ -151,12 +152,12 @@ def test_non_manifest_files_are_ignored(world: FakeHttp, tmp_path: Path) -> None
 def test_can_be_disabled(
     world: FakeHttp, dockerfile: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setenv("FRESHDEPS_HOOK", "off")
+    monkeypatch.setenv("FRESHPIN_HOOK", "off")
     assert call(write_payload(dockerfile)) == (0, None)
 
 
 def test_context_mode(world: FakeHttp, dockerfile: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FRESHDEPS_HOOK_MODE", "context")
+    monkeypatch.setenv("FRESHPIN_HOOK_MODE", "context")
     _, out = call(write_payload(dockerfile))
     assert out is not None and "decision" not in out
     assert out["hookSpecificOutput"]["hookEventName"] == "PostToolUse"
@@ -171,7 +172,7 @@ def test_main_never_raises(
 
     monkeypatch.setattr(hook, "run", boom)
     assert hook.main() == 0
-    monkeypatch.setenv("FRESHDEPS_HOOK_DEBUG", "1")
+    monkeypatch.setenv("FRESHPIN_HOOK_DEBUG", "1")
     assert hook.main() == 0
     assert "kaboom" in capsys.readouterr().err
 
@@ -179,16 +180,16 @@ def test_main_never_raises(
 def test_cli_fallback_when_package_is_not_importable(
     dockerfile: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(hook, "_import_freshdeps", lambda: False)
-    monkeypatch.setattr(hook.shutil, "which", lambda name: "/usr/local/bin/freshdeps")
+    monkeypatch.setattr(hook, "_import_freshpin", lambda: False)
+    monkeypatch.setattr(hook.shutil, "which", lambda name: "/usr/local/bin/freshpin")
 
     def fake_run(cmd: list[str], **_: Any) -> subprocess.CompletedProcess[str]:
         assert cmd[1:] == ["audit", str(dockerfile), "--format", "agent", "--fail-on-outdated"]
-        return subprocess.CompletedProcess(cmd, 1, stdout="freshdeps: 1 outdated\nx | a -> b\n")
+        return subprocess.CompletedProcess(cmd, 1, stdout="freshpin: 1 outdated\nx | a -> b\n")
 
     monkeypatch.setattr(hook.subprocess, "run", fake_run)
     _, out = call(write_payload(dockerfile))
-    assert out is not None and out["reason"].startswith("freshdeps: 1 outdated")
+    assert out is not None and out["reason"].startswith("freshpin: 1 outdated")
     monkeypatch.setattr(hook.shutil, "which", lambda name: None)
     assert call(write_payload(dockerfile)) == (0, None)
 
@@ -216,11 +217,11 @@ def test_script_end_to_end_offline_from_cache(tmp_path: Path) -> None:
     (project / "Dockerfile").write_text("FROM python:3.10-slim\n")
     env = {
         **os.environ,
-        "FRESHDEPS_CACHE_DIR": str(cache_dir),
-        "FRESHDEPS_OFFLINE": "1",
+        "FRESHPIN_CACHE_DIR": str(cache_dir),
+        "FRESHPIN_OFFLINE": "1",
         "CLAUDE_PLUGIN_ROOT": str(ROOT),
     }
-    env.pop("FRESHDEPS_HOOK", None)
+    env.pop("FRESHPIN_HOOK", None)
     proc = subprocess.run(
         [sys.executable, str(HOOK_PATH)],
         input=json.dumps(write_payload(project / "Dockerfile")),
@@ -240,39 +241,41 @@ def test_script_end_to_end_offline_from_cache(tmp_path: Path) -> None:
 def test_plugin_manifests_are_consistent() -> None:
     plugin = json.loads((ROOT / ".claude-plugin" / "plugin.json").read_text())
     market = json.loads((ROOT / ".claude-plugin" / "marketplace.json").read_text())
-    assert plugin["name"] == "freshdeps"
+    assert plugin["name"] == "freshpin"
     assert re.fullmatch(r"[a-z0-9]+(-[a-z0-9]+)*", plugin["name"])
     assert "hooks" not in plugin and "skills" not in plugin  # auto-discovered defaults
     entry = market["plugins"][0]
     assert entry["name"] == plugin["name"] and entry["source"] == "./"
     assert entry["version"] == plugin["version"] == market["metadata"]["version"]
+    assert plugin["version"] == __version__, "bump .claude-plugin/*.json with __version__"
     assert market["owner"]["name"]
 
 
 def test_hooks_json_points_at_the_hook_script() -> None:
     config = json.loads((ROOT / "hooks" / "hooks.json").read_text())
     (entry,) = config["hooks"]["PostToolUse"]
-    assert set(entry["matcher"].split("|")) >= {"Write", "Edit"}
+    assert set(entry["matcher"].split("|")) >= {"Write", "Edit", "MultiEdit", "Bash"}
     (command,) = entry["hooks"]
     assert command["type"] == "command" and isinstance(command["timeout"], int)
-    assert "${CLAUDE_PLUGIN_ROOT}/hooks/check_written_file.py" in command["command"]
+    assert "${CLAUDE_PLUGIN_ROOT}/hooks/freshpin-hook.sh" in command["command"]
     assert HOOK_PATH.is_file() and os.access(HOOK_PATH, os.X_OK)
+    assert os.access(ROOT / "hooks" / "freshpin-hook.sh", os.X_OK)
 
 
 def test_skill_frontmatter() -> None:
-    text = (ROOT / "skills" / "freshdeps" / "SKILL.md").read_text()
+    text = (ROOT / "skills" / "freshpin" / "SKILL.md").read_text()
     match = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
     assert match, "SKILL.md must start with YAML frontmatter"
     fields = dict(line.split(": ", 1) for line in match.group(1).splitlines())
-    assert fields["name"] == "freshdeps"
+    assert fields["name"] == "freshpin"
     assert 50 < len(fields["description"]) <= 1024
     for trigger in ("Dockerfile", "docker-compose.yml", ".github/workflows", "package.json"):
         assert trigger in fields["description"]
-    assert "freshdeps resolve" in text and "freshdeps audit" in text
+    assert "freshpin resolve" in text and "freshpin audit" in text
 
 
 def test_skill_launcher_runs_bundled_copy() -> None:
-    script = ROOT / "skills" / "freshdeps" / "scripts" / "freshdeps.py"
+    script = ROOT / "skills" / "freshpin" / "scripts" / "freshpin.py"
     proc = subprocess.run(
         [sys.executable, "-I", str(script), "--version"],
         capture_output=True,
@@ -280,4 +283,113 @@ def test_skill_launcher_runs_bundled_copy() -> None:
         check=False,
     )
     assert proc.returncode == 0, proc.stderr
-    assert proc.stdout.startswith("freshdeps ")
+    assert proc.stdout.startswith("freshpin ")
+
+
+# --- Bash: files written by shell commands and manifests edited by installs ----------------
+
+
+def bash_payload(command: str, cwd: Path) -> dict[str, Any]:
+    return {
+        "hook_event_name": "PostToolUse",
+        "tool_name": "Bash",
+        "cwd": str(cwd),
+        "tool_input": {"command": command, "description": "x"},
+        "tool_response": {"stdout": "", "stderr": ""},
+    }
+
+
+def test_bash_targets_parsing(tmp_path: Path) -> None:
+    command = (
+        "cd sub && mkdir -p .github/workflows\n"
+        "cat > requirements.txt <<'E'\nfastapi>=0.100.0\nuvicorn>=0.30\nE\n"
+        "cat <<EOF > Dockerfile\nFROM python:3.10-slim\nEOF\n"
+        "echo x | tee -a docker-compose.yml 2>/dev/null; echo y >> /abs/.github/workflows/ci.yml\n"
+        "npm install react@18 @types/node@20 -D && uv add 'fastapi>=0.100' httpx; cargo add serde@1"
+    )
+    written, installs = hook.bash_targets(command, tmp_path)
+    sub = tmp_path / "sub"
+    assert written == [
+        sub / "requirements.txt",
+        sub / "Dockerfile",
+        sub / "docker-compose.yml",
+        Path("/abs/.github/workflows/ci.yml"),
+    ]
+    assert installs == {
+        sub / "package.json": {"react", "@types/node"},
+        sub / "pyproject.toml": {"fastapi", "httpx"},
+        sub / "Cargo.toml": {"serde"},
+    }
+    # heredoc bodies are not commands: ">=" inside them is not a redirect
+    assert not any(str(p).endswith("0.100.0") for p in written)
+
+
+def test_bash_heredoc_write_is_audited(world: FakeHttp, tmp_path: Path) -> None:
+    (tmp_path / "Dockerfile").write_text("FROM python:3.10-slim\n")
+    command = "cat > Dockerfile <<'EOF'\nFROM python:3.10-slim\nEOF"
+    _, out = call(bash_payload(command, tmp_path))
+    assert out is not None and out["decision"] == "block"
+    assert "Dockerfile:1 | python:3.10-slim -> python:3.14-slim" in out["reason"]
+
+
+def test_bash_install_only_reports_named_packages(world: FakeHttp, tmp_path: Path) -> None:
+    (tmp_path / "package.json").write_text(
+        '{"dependencies": {"react": "^18.2.0", "next": "14.2.3"}}'
+    )
+    _, out = call(bash_payload("npm install react@18.2.0", tmp_path))
+    assert out is not None
+    assert '"react": "^18.2.0"' in out["reason"] and "next" not in out["reason"]
+
+
+def test_bash_without_writes_is_free(world: FakeHttp, tmp_path: Path) -> None:
+    for command in ("ls -la", "pytest -q", "git status", "echo hi > notes.txt", "pip list"):
+        assert call(bash_payload(command, tmp_path)) == (0, None)
+    assert world.calls == []
+
+
+def _broken_python_dir(tmp_path: Path) -> Path:
+    """A PATH entry whose `python3` fails to start, like a non-system Python in a sandbox."""
+    bindir = tmp_path / "bin"
+    bindir.mkdir()
+    fake = bindir / "python3"
+    fake.write_text(
+        "#!/bin/sh\necho 'Fatal Python error: Failed to import encodings' >&2\nexit 1\n"
+    )
+    fake.chmod(0o755)
+    return bindir
+
+
+def test_sh_launchers_skip_a_broken_python(tmp_path: Path) -> None:
+    working = Path(sys.executable).parent
+    env = {**os.environ, "PATH": f"{_broken_python_dir(tmp_path)}:{working}:/usr/bin:/bin"}
+    env.pop("CLAUDE_PLUGIN_ROOT", None)
+    script = ROOT / "skills" / "freshpin" / "scripts" / "freshpin"
+    proc = subprocess.run(
+        ["/bin/sh", str(script), "--version"], capture_output=True, text=True, env=env, check=False
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.startswith("freshpin ")
+    hook_sh = ROOT / "hooks" / "freshpin-hook.sh"
+    proc = subprocess.run(
+        ["/bin/sh", str(hook_sh)],
+        input="not json",
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    assert proc.returncode == 0 and proc.stdout == ""
+
+
+def test_sh_hook_without_any_python_is_silent(tmp_path: Path) -> None:
+    env = {"PATH": str(_broken_python_dir(tmp_path)) + ":/nonexistent"}
+    proc = subprocess.run(
+        ["/bin/sh", str(ROOT / "hooks" / "freshpin-hook.sh")],
+        input="{}",
+        capture_output=True,
+        text=True,
+        env=env,
+        check=False,
+    )
+    # /usr/bin/python3 may exist on the host; either way the hook must exit 0 quietly
+    assert proc.returncode == 0 and proc.stdout == ""

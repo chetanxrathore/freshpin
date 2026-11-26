@@ -10,8 +10,8 @@ from pathlib import Path
 import pytest
 
 from conftest import FIXTURES, FakeHttp
-from freshdeps import __version__
-from freshdeps.cli import main
+from freshpin import __version__
+from freshpin.cli import main
 
 STALE = FIXTURES / "stale"
 
@@ -67,6 +67,15 @@ def test_resolve_agent_format_is_compact(world: FakeHttp) -> None:
         "gha:actions/checkout v5.0.0 (uses: actions/checkout@v5)",
         "eol:postgres 18.1 (cycle 18; EOL 2099-01-01; docker postgres:18)",
     ]
+
+
+def test_resolve_docker_hint_uses_a_published_tag(world: FakeHttp) -> None:
+    code, out = run("resolve", "docker:elasticsearch", "eol:python", "-f", "agent")
+    assert code == 0
+    assert "docker elasticsearch:8.2.3" in out  # 8.2 is not published on Docker Hub
+    assert "docker python:3.14" in out
+    _, unverified = run("resolve", "docker:elasticsearch", "-f", "agent", "--no-verify")
+    assert "docker elasticsearch:8.2)" in unverified
 
 
 def test_resolve_errors_exit_nonzero(world: FakeHttp) -> None:
@@ -134,7 +143,7 @@ def test_audit_agent_format_and_fail_on_outdated(world: FakeHttp) -> None:
     )
     assert code == 1
     lines = out.splitlines()
-    assert lines[0].startswith("freshdeps: 9 outdated of 13 checked")
+    assert lines[0].startswith("freshpin: 9 outdated of 13 checked")
     assert any(
         line.endswith("ci.yml:13 | actions/checkout@v3 -> actions/checkout@v5 [major]")
         for line in lines
@@ -145,7 +154,7 @@ def test_audit_clean_project(world: FakeHttp, tmp_path: Path) -> None:
     (tmp_path / "requirements.txt").write_text("requests>=2.32\n")
     code, out = run("audit", str(tmp_path), "-f", "agent", "--fail-on-outdated")
     assert code == 0
-    assert out.strip() == "freshdeps: OK - 1 checked, none outdated."
+    assert out.strip() == "freshpin: OK - 1 checked, none outdated."
 
 
 def test_audit_empty_and_missing_paths(world: FakeHttp, tmp_path: Path) -> None:
@@ -160,6 +169,12 @@ def test_audit_ignore_and_exclude(world: FakeHttp) -> None:
     assert "package.json" not in out
     _, out = run("audit", str(STALE / "frontend"), "-f", "agent", "--ignore", "react*")
     assert '"react"' not in out and "@types/node" in out
+
+
+def test_audit_no_floor_check(world: FakeHttp, tmp_path: Path) -> None:
+    (tmp_path / "requirements.txt").write_text("django>=4.2\n")
+    assert run("audit", str(tmp_path), "--fail-on-outdated")[0] == 1
+    assert run("audit", str(tmp_path), "--fail-on-outdated", "--no-floor-check")[0] == 0
 
 
 def test_audit_level(world: FakeHttp, tmp_path: Path) -> None:
@@ -203,7 +218,7 @@ def test_version_flag(capsys: pytest.CaptureFixture[str]) -> None:
     with pytest.raises(SystemExit) as info:
         main(["--version"])
     assert info.value.code == 0
-    assert capsys.readouterr().out.strip() == f"freshdeps {__version__}"
+    assert capsys.readouterr().out.strip() == f"freshpin {__version__}"
 
 
 def test_bad_ttl_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
@@ -215,9 +230,9 @@ def test_bad_ttl_is_a_usage_error(capsys: pytest.CaptureFixture[str]) -> None:
 
 def test_python_dash_m_entrypoint() -> None:
     proc = subprocess.run(
-        [sys.executable, "-m", "freshdeps", "--version"],
+        [sys.executable, "-m", "freshpin", "--version"],
         capture_output=True,
         text=True,
         check=False,
     )
-    assert proc.returncode == 0 and proc.stdout.strip() == f"freshdeps {__version__}"
+    assert proc.returncode == 0 and proc.stdout.strip() == f"freshpin {__version__}"

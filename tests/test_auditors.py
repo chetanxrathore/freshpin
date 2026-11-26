@@ -6,15 +6,15 @@ from pathlib import Path
 
 import pytest
 
-from conftest import FIXTURES, FakeHttp
-from freshdeps.auditors import (
+from conftest import FIXTURES, FakeHttp, sha_of
+from freshpin.auditors import (
     AuditReport,
     audit_paths,
     detect_kind,
     discover_files,
     parse_file,
 )
-from freshdeps.auditors.base import (
+from freshpin.auditors.base import (
     DependencyRef,
     Finding,
     bracket_delta,
@@ -22,19 +22,19 @@ from freshdeps.auditors.base import (
     quoted_strings,
     strip_comment,
 )
-from freshdeps.auditors.cargo_toml import classify_table, parse_cargo_toml
-from freshdeps.auditors.docker import parse_compose, parse_dockerfile, split_image, substitute
-from freshdeps.auditors.github_workflows import parse_workflow
-from freshdeps.auditors.package_json import parse_package_json
-from freshdeps.auditors.pyproject import (
+from freshpin.auditors.cargo_toml import classify_table, parse_cargo_toml
+from freshpin.auditors.docker import parse_compose, parse_dockerfile, split_image, substitute
+from freshpin.auditors.github_workflows import parse_workflow
+from freshpin.auditors.package_json import parse_package_json
+from freshpin.auditors.pyproject import (
     parse_pyproject,
     parse_requirement,
     parse_requirements,
     table_name,
 )
-from freshdeps.cache import Cache
-from freshdeps.registries import Resolver
-from freshdeps.registries.base import Resolution
+from freshpin.cache import Cache
+from freshpin.registries import Resolver
+from freshpin.registries.base import Resolution
 
 TODAY = date(2026, 11, 26)
 STALE = FIXTURES / "stale"
@@ -138,7 +138,7 @@ def test_pyproject_sections_and_lines() -> None:
     assert (11, "project", 'requires-python = ">=3.9"', None) in summary
     assert (17, "dependencies", "pydantic[email]>=1.10,<2", None) in summary
     assert (22, "dependencies", "mylib", "skipped") in summary  # direct URL
-    assert (23, "dependencies", "uvicorn>=0.30.0", "skipped") in summary  # freshdeps: ignore
+    assert (23, "dependencies", "uvicorn>=0.30.0", "skipped") in summary  # freshpin: ignore
     assert (27, "optional-dependencies.test", "pytest>=8.0.0", None) in summary
     assert (32, "dependency-groups.dev", "pytest>=9.2.0", None) in summary
     assert (36, "tool.poetry.dependencies", 'python = "^3.10"', None) in summary
@@ -340,7 +340,7 @@ def test_docker_helpers() -> None:
         (
             ".github/workflows/ci.yml:20",
             "outdated",
-            "actions/cache@<commit SHA of v4.3.0> # v4.3.0",
+            f"actions/cache@{sha_of('v4.3.0')} # v4.3.0",
         ),
         (".github/workflows/ci.yml:21", "outdated", "github/codeql-action/init@v4"),
         (".github/workflows/ci.yml:23", "outdated", "alpine:3.22"),
@@ -372,6 +372,8 @@ def test_stale_fixture_notes(stale_report: AuditReport) -> None:
     assert "constraint excludes the latest release" in found["pyproject.toml:17"].note
     assert "floor is a breaking release behind" in found["pyproject.toml:16"].note
     assert "14 is EOL" in found["docker-compose.yml:3"].note
+    assert "existing data needs a migration" in found["docker-compose.yml:3"].note
+    assert "migration" not in found["Dockerfile:6"].note  # node is not a database
     assert "11 is EOL" in found["Dockerfile:7"].note
     assert "ARG PYTHON_VERSION" in found["Dockerfile:2"].note
     assert found[".github/workflows/ci.yml:13"].bump == "major"
@@ -463,3 +465,76 @@ def test_evaluate_edge_cases() -> None:
     gha_branch = Resolution("gha", "x", "gha:x", version="v2.0.0")
     assert evaluate(_ref("gha", "main"), gha_branch).status == "unpinned"
     assert evaluate(_ref("runtime", "*", syntax="semver"), ok).status == "unpinned"
+
+
+def test_docker_suggestions_are_verified_and_repaired(tmp_path: Path) -> None:
+    compose = tmp_path / "docker-compose.yml"
+    compose.write_text(
+        "services:\n"
+        "  search:\n    image: elasticsearch:7.17\n"
+        "  cache:\n    image: memcached:1.5\n"
+        "  db:\n    image: postgres:14\n"
+        "  app:\n    image: ghcr.io/acme/postgres:14\n"
+    )
+    report = audit_paths([compose], resolver(), today=TODAY)
+    found = {f.ref.line: f for f in report.findings}
+    search = found[3]  # short tag 8.2 is not published -> full version
+    assert search.suggested == "elasticsearch:8.2.3" and search.verified is True
+    assert "elasticsearch:8.2 is not published" in search.note
+    cache = found[5]  # nothing published -> flagged, suggestion kept
+    assert cache.suggested == "memcached:1.6" and cache.verified is False
+    assert "not found on Docker Hub" in cache.note
+    assert found[7].verified is True  # postgres:18 exists
+    assert found[9].status == "skipped"  # not a tracked image
+    assert found[3].to_dict()["verified"] is True
+    unverified = audit_paths([compose], resolver(), today=TODAY, verify_tags=False)
+    assert all(f.verified is None for f in unverified.findings)
+    assert unverified.findings[0].suggested == "elasticsearch:8.2"
+
+
+def test_utf8_bom_files_parse(tmp_path: Path) -> None:
+    pkg = tmp_path / "package.json"
+    pkg.write_bytes(b'\xef\xbb\xbf{"dependencies": {"react": "^18.2.0"}}')
+    report = audit_paths([pkg], resolver(), today=TODAY)
+    assert report.errors == [] and report.findings[0].status == "outdated"
+
+
+def test_prerelease_only_packages_are_not_errors(tmp_path: Path) -> None:
+    req = tmp_path / "requirements.txt"
+    req.write_text("onlypre>=1.0a1\n")
+    (finding,) = audit_paths([req], resolver(), today=TODAY).findings
+    assert finding.status == "ok" and "only pre-releases" in finding.note
+
+
+def test_retired_os_variants_are_modernised(tmp_path: Path) -> None:
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "FROM python:3.10-buster\nFROM python:3.10-focal\nFROM node:18-alpine3.14\n"
+        "FROM node:18.20.1-alpine3.14\n"
+    )
+    found = audit_paths([dockerfile], resolver(), today=TODAY).findings
+    assert [f.suggested for f in found] == [
+        "python:3.14-trixie",  # newest supported Debian
+        "python:3.14-noble",  # newest supported Ubuntu LTS
+        "node:24-alpine3.22",  # newest Alpine
+        "node:24.11-alpine3.22",  # full version not published with that suffix: shorter form
+    ]
+    assert all(f.verified for f in found)
+    assert "buster variant is not published for 3.14; using trixie" in found[0].note
+
+
+def test_runtime_pin_moves_forward_instead_of_widening(tmp_path: Path) -> None:
+    py = tmp_path / "pyproject.toml"
+    py.write_text('[project]\nname = "x"\nrequires-python = "==3.13.*"\n')
+    (finding,) = audit_paths([py], resolver(), today=TODAY).findings
+    assert finding.status == "outdated"
+    assert finding.suggested == 'requires-python = "==3.14.*"'
+
+
+def test_library_mode_skips_stale_floors(tmp_path: Path) -> None:
+    req = tmp_path / "requirements.txt"
+    req.write_text("django>=4.2\nrequests==2.28.0\n")
+    strict = audit_paths([req], resolver(), today=TODAY)
+    library = audit_paths([req], resolver(), today=TODAY, check_floors=False)
+    assert [f.status for f in strict.findings] == ["outdated", "outdated"]
+    assert [f.status for f in library.findings] == ["ok", "outdated"]

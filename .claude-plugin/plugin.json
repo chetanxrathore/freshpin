@@ -1,10 +1,12 @@
 {
-  "name": "freshdeps",
+  "name": "freshpin",
   "version": "0.1.0",
   "description": "Stop AI agents from writing stale versions. A skill that makes Claude resolve the latest stable libraries, GitHub Actions, Docker images, databases and runtimes from live registries, plus a PostToolUse hook that flags outdated versions the moment they are written.",
   "author": {
-    "name": "freshdeps contributors"
+    "name": "freshpin contributors"
   },
+  "homepage": "https://github.com/chetanxrathore/freshpin",
+  "repository": "https://github.com/chetanxrathore/freshpin",
   "license": "MIT",
   "keywords": [
     "dependencies",

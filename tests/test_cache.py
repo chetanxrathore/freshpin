@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from freshdeps.cache import Cache, default_cache_dir, default_ttl, parse_duration
+from freshpin.cache import Cache, default_cache_dir, default_ttl, parse_duration
 
 
 def test_set_get_flush_roundtrip(tmp_path: Path) -> None:
@@ -118,12 +118,12 @@ def test_parse_duration() -> None:
 
 
 def test_env_configuration(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setenv("FRESHDEPS_CACHE_DIR", str(tmp_path / "x"))
+    monkeypatch.setenv("FRESHPIN_CACHE_DIR", str(tmp_path / "x"))
     assert default_cache_dir() == tmp_path / "x"
-    monkeypatch.delenv("FRESHDEPS_CACHE_DIR")
+    monkeypatch.delenv("FRESHPIN_CACHE_DIR")
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
-    assert default_cache_dir() == tmp_path / "freshdeps"
-    monkeypatch.setenv("FRESHDEPS_CACHE_TTL", "2h")
+    assert default_cache_dir() == tmp_path / "freshpin"
+    monkeypatch.setenv("FRESHPIN_CACHE_TTL", "2h")
     assert default_ttl() == 7200
-    monkeypatch.setenv("FRESHDEPS_CACHE_TTL", "garbage")
+    monkeypatch.setenv("FRESHPIN_CACHE_TTL", "garbage")
     assert default_ttl() == 6 * 3600

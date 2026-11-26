@@ -9,3 +9,10 @@ build/
 *.egg-info/
 .coverage
 htmlcov/
+
+# claude plugin eval output
+evals/results/
+
+# local research working files (the final report is docs/RESEARCH.md)
+research_notes/
+reports/

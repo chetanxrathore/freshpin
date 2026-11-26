@@ -1,13 +1,13 @@
 {
-  "description": "freshdeps: flag outdated versions right after Claude writes a manifest, workflow or Dockerfile",
+  "description": "freshpin: flag outdated versions right after Claude writes a manifest, workflow or Dockerfile (with an edit tool or a shell command)",
   "hooks": {
     "PostToolUse": [
       {
-        "matcher": "Write|Edit|MultiEdit",
+        "matcher": "Write|Edit|MultiEdit|Bash",
         "hooks": [
           {
             "type": "command",
-            "command": "python3 \"${CLAUDE_PLUGIN_ROOT}/hooks/check_written_file.py\"",
+            "command": "sh \"${CLAUDE_PLUGIN_ROOT}/hooks/freshpin-hook.sh\"",
             "timeout": 30
           }
         ]

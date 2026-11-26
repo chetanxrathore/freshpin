@@ -20,7 +20,7 @@ dependencies = [
   "numpy==1.26.4; python_version >= '3.9'",
   "httpx",
   "mylib @ git+https://github.com/acme/mylib",
-  "uvicorn>=0.30.0",  # freshdeps: ignore
+  "uvicorn>=0.30.0",  # freshpin: ignore
 ]
 
 [project.optional-dependencies]

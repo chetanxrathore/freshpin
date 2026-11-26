@@ -3,15 +3,17 @@ requires = ["hatchling>=1.33.0"]
 build-backend = "hatchling.build"
 
 [project]
-# The PyPI name "freshdeps" belongs to an unrelated project; the command is still `freshdeps`.
-name = "freshdeps-cli"
-version = "0.1.0"
+name = "freshpin"
+# Single source of truth: __version__ in src/freshpin/__init__.py (see PUBLISHING.md).
+dynamic = ["version"]
 description = "Stop AI coding agents from writing stale versions: resolve and audit the latest stable libraries, GitHub Actions, Docker images, databases and runtimes."
 readme = "README.md"
-requires-python = ">=3.10"  # freshdeps: ignore - 3.10 is EOL, kept on purpose so the CLI runs on older systems
+# 3.9 is EOL, but it is the Python that ships with macOS and the only one Claude Code's
+# sandbox could run in the agent eval, so the plugin must work on it.
+requires-python = ">=3.9"  # freshpin: ignore
 license = "MIT"
 license-files = ["LICENSE-MIT"]
-authors = [{ name = "freshdeps contributors" }]
+authors = [{ name = "freshpin contributors" }]
 keywords = [
   "dependencies",
   "versions",
@@ -31,6 +33,7 @@ classifiers = [
   "Operating System :: OS Independent",
   "Programming Language :: Python :: 3",
   "Programming Language :: Python :: 3 :: Only",
+  "Programming Language :: Python :: 3.9",
   "Programming Language :: Python :: 3.10",
   "Programming Language :: Python :: 3.11",
   "Programming Language :: Python :: 3.12",
@@ -44,8 +47,14 @@ classifiers = [
 # Zero runtime dependencies: stdlib only, so it installs instantly anywhere.
 dependencies = []
 
+[project.urls]
+Homepage = "https://github.com/chetanxrathore/freshpin"
+Repository = "https://github.com/chetanxrathore/freshpin"
+Issues = "https://github.com/chetanxrathore/freshpin/issues"
+Changelog = "https://github.com/chetanxrathore/freshpin/releases"
+
 [project.scripts]
-freshdeps = "freshdeps.cli:main"
+freshpin = "freshpin.cli:main"
 
 [dependency-groups]
 dev = [
@@ -54,20 +63,35 @@ dev = [
   "mypy>=2.4.1",
 ]
 
+[tool.uv]
+# The package supports Python 3.9+, but the dev tools (mypy 2.x, pytest 9) need 3.10+.
+# Test on 3.9 with: uv run --no-project --python 3.9 --with "pytest<9" -- env PYTHONPATH=src python -m pytest
+environments = ["python_version >= '3.10'"]
+
+[tool.hatch.version]
+path = "src/freshpin/__init__.py"
+
 [tool.hatch.build.targets.wheel]
-packages = ["src/freshdeps"]
+packages = ["src/freshpin"]
 
 [tool.hatch.build.targets.sdist]
 include = [
-  "src/freshdeps",
+  "src/freshpin",
   "tests",
   "skills",
   "hooks",
   ".claude-plugin",
   "README.md",
   "CONTRIBUTING.md",
+  "PUBLISHING.md",
+  "ROADMAP.md",
+  "docs",
+  "evals",
+  "validation",
+  "assets",
   "LICENSE-MIT",
 ]
+exclude = ["evals/results", "validation/results/*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -75,7 +99,7 @@ addopts = "-ra --strict-markers"
 
 [tool.ruff]
 line-length = 100
-target-version = "py310"
+target-version = "py39"
 src = ["src", "tests", "hooks"]
 
 [tool.ruff.lint]
@@ -99,10 +123,12 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101", "S105", "S106", "S603"]
 "hooks/**" = ["S603"]
+# Live validation harnesses: they shell out to npm/git on purpose and build long report rows.
+"validation/**" = ["S101", "S311", "S603", "S607", "E501"]
 
 [tool.mypy]
-python_version = "3.10"
+python_version = "3.10"  # lowest mypy 2.x supports; 3.9 is covered by running the tests on 3.9
 strict = true
 warn_unreachable = true
 mypy_path = "src"
-files = ["src/freshdeps"]
+files = ["src/freshpin"]

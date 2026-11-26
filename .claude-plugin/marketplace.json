@@ -1,15 +1,15 @@
 {
-  "name": "freshdeps",
+  "name": "freshpin",
   "owner": {
-    "name": "freshdeps contributors"
+    "name": "freshpin contributors"
   },
   "metadata": {
-    "description": "freshdeps: always use the latest stable versions instead of guessing from training data.",
+    "description": "freshpin: always use the latest stable versions instead of guessing from training data.",
     "version": "0.1.0"
   },
   "plugins": [
     {
-      "name": "freshdeps",
+      "name": "freshpin",
       "source": "./",
       "description": "Skill + PostToolUse hook that resolve and audit the latest stable versions of packages (PyPI, npm, crates.io), GitHub Actions, Docker base images, databases and runtimes.",
       "version": "0.1.0",
