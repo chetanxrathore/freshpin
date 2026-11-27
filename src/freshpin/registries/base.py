@@ -152,6 +152,11 @@ class HttpClient:
         return result if isinstance(result, str) and result else None
 
 
+# Per-version data that audits use to check exact pins. It is cached with the lookup but
+# left out of ``resolve`` output: a list of every release is noise there.
+INTERNAL_DETAILS = frozenset({"versions", "yanked", "releases"})
+
+
 @dataclass(frozen=True)
 class Resolution:
     """The outcome of resolving one ``ecosystem:name`` query."""
@@ -183,8 +188,9 @@ class Resolution:
             out["stale"] = True
         if self.error:
             out["error"] = self.error
-        if self.details:
-            out["details"] = dict(self.details)
+        details = {k: v for k, v in self.details.items() if k not in INTERNAL_DETAILS}
+        if details:
+            out["details"] = details
         return out
 
 
@@ -203,7 +209,18 @@ class Registry(ABC):
     @abstractmethod
     def fetch(self, name: str, http: HttpClient, *, include_pre: bool = False) -> dict[str, Any]:
         """Query the registry. Must return a JSON-serialisable dict with a ``version`` key
-        (and optionally ``url`` and ``details``). Raise :class:`RegistryError` on failure."""
+        (and optionally ``url`` and ``details``). Raise :class:`RegistryError` on failure.
+
+        Registries whose response lists every release put them in ``details["versions"]``
+        (the complete list, as published) and ``details["yanked"]`` (version -> reason, or
+        ``""``), so exact pins can be checked without another request."""
+
+    def fetch_release(self, name: str, version: str, http: HttpClient) -> dict[str, Any] | None:
+        """Facts about one exact ``version``, for registries whose :meth:`fetch` does not list
+        every release: ``{"published": True}`` plus ``"deprecated"`` (a notice) when it has
+        one. Raise :class:`NotFoundError` when the version is not published. ``None`` means
+        the registry needs no per-version lookup."""
+        return None
 
 
 def as_dict(value: Any) -> dict[str, Any]:

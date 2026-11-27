@@ -6,9 +6,40 @@ import re
 from typing import Any, ClassVar
 from urllib.parse import quote
 
-from freshpin.registries.base import HttpClient, Registry, RegistryError, as_dict, as_str
+from freshpin.registries.base import (
+    HttpClient,
+    Registry,
+    RegistryError,
+    as_dict,
+    as_str,
+    clean_text,
+)
 
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
+
+
+def _add_release_index(details: dict[str, Any], versions: Any, count: Any) -> None:
+    """Record every published version and the yanked ones from the crate response.
+
+    The list only counts as complete (so a pin missing from it is reported) when its
+    length matches the crate's ``num_versions``. Yanks are recorded either way.
+    """
+    if not isinstance(versions, list):
+        return
+    nums: list[str] = []
+    yanked: dict[str, str] = {}
+    for item in versions:
+        entry = as_dict(item)
+        num = as_str(entry.get("num"))
+        if num is None:
+            continue
+        nums.append(num)
+        if entry.get("yanked") is True:
+            yanked[num] = clean_text(entry.get("yank_message")) or ""
+    if isinstance(count, int) and count == len(nums):
+        details["versions"] = nums
+    if yanked:
+        details["yanked"] = yanked
 
 
 class CratesRegistry(Registry):
@@ -37,6 +68,7 @@ class CratesRegistry(Registry):
         canonical = as_str(crate.get("name")) or name
         if newest and newest != version:
             details["newest_prerelease"] = newest
+        _add_release_index(details, data.get("versions"), crate.get("num_versions"))
         return {
             "version": version,
             "url": f"https://crates.io/crates/{canonical}/{version}",

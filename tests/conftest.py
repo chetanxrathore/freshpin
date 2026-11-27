@@ -20,8 +20,22 @@ OLD = "2020-01-01"
 FUTURE = "2099-01-01"
 
 
-def pypi(*versions: str, yanked: tuple[str, ...] = (), summary: str = "pkg") -> dict[str, Any]:
-    releases = {v: [{"filename": f"pkg-{v}.tar.gz", "yanked": v in yanked}] for v in versions}
+def pypi(
+    *versions: str,
+    yanked: tuple[str, ...] = (),
+    summary: str = "pkg",
+    reason: str | None = None,
+) -> dict[str, Any]:
+    releases = {
+        v: [
+            {
+                "filename": f"pkg-{v}.tar.gz",
+                "yanked": v in yanked,
+                "yanked_reason": reason if v in yanked else None,
+            }
+        ]
+        for v in versions
+    }
     stable = [v for v in versions if not any(t in v for t in ("a", "b", "rc", "dev"))]
     return {
         "info": {"version": stable[-1] if stable else versions[-1], "summary": summary},
@@ -92,7 +106,7 @@ def world() -> dict[str, Any]:
         ),
         "https://pypi.org/pypi/requests/json": pypi("2.28.0", "2.31.0", "2.32.5"),
         "https://pypi.org/pypi/pydantic/json": pypi(
-            "1.10.13", "2.11.4", "2.12.0", yanked=("2.12.0",)
+            "1.10.13", "2.11.4", "2.12.0", yanked=("2.12.0",), reason="broken wheel metadata"
         ),
         "https://pypi.org/pypi/django/json": pypi("4.2", "5.2.8"),
         "https://pypi.org/pypi/numpy/json": pypi("1.26.4", "2.3.4"),
@@ -117,12 +131,34 @@ def world() -> dict[str, Any]:
             "version": "2.88.2",
             "deprecated": "request has been deprecated",
         },
+        # Per-version documents, fetched only for exact pins that are not the latest release.
+        "https://registry.npmjs.org/next/14.2.3": {"name": "next", "version": "14.2.3"},
+        "https://registry.npmjs.org/lodash/4.17.20": {
+            "name": "lodash",
+            "version": "4.17.20",
+            "deprecated": "critical bug fixed in 4.17.21",
+        },
+        "https://registry.npmjs.org/request/2.88.0": {
+            "name": "request",
+            "version": "2.88.0",
+            "deprecated": "request has been deprecated",
+        },
         # --- crates.io ------------------------------------------------------------
         "https://crates.io/api/v1/crates/serde": {
             "crate": {"name": "serde", "max_stable_version": "1.0.228", "max_version": "1.0.228"}
         },
         "https://crates.io/api/v1/crates/tokio": {
-            "crate": {"name": "tokio", "max_stable_version": "1.48.0", "max_version": "1.48.0"}
+            "crate": {
+                "name": "tokio",
+                "max_stable_version": "1.48.0",
+                "max_version": "1.48.0",
+                "num_versions": 3,
+            },
+            "versions": [
+                {"num": "1.48.0", "yanked": False, "yank_message": None},
+                {"num": "1.47.0", "yanked": True, "yank_message": "soundness bug"},
+                {"num": "1.28.0", "yanked": False, "yank_message": None},
+            ],
         },
         "https://crates.io/api/v1/crates/reqwest": {
             "crate": {

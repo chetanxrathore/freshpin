@@ -142,28 +142,31 @@ def render(
 ) -> list[str]:
     out = [f"# freshpin real-world corpus audit ({time.strftime('%Y-%m-%d')})", ""]
     out += [
-        "| Repository | Files | Declarations | Outdated | OK | Unpinned | Skipped | Errors | Parse errors | Seconds |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| Repository | Files | Declarations | Outdated | Missing | Yanked | OK | Unpinned | Skipped | Errors | Parse errors | Seconds |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     totals: Counter[str] = Counter()
     for r in rows:
         if "crash" in r or "clone_failed" in r:
             label = "CRASH" if "crash" in r else "clone failed"
-            out.append(f"| {r['repo']} | {label} | | | | | | | | |")
+            out.append(f"| {r['repo']} | {label} | | | | | | | | | | |")
             continue
         perr = r["parse_errors"]
         assert isinstance(perr, list)
         out.append(
-            f"| {r['repo']} | {r['files']} | {r['declarations']} | {r['outdated']} | {r['ok']} | "
+            f"| {r['repo']} | {r['files']} | {r['declarations']} | {r['outdated']} | "
+            f"{r['missing']} | {r['yanked']} | {r['ok']} | "
             f"{r['unpinned']} | {r['skipped']} | {r['error']} | {len(perr)} | {r['seconds']} |"
         )
-        for key in ("files", "declarations", "outdated", "ok", "unpinned", "skipped", "error"):
+        keys = ("files", "declarations", "outdated", "missing", "yanked", "ok", "unpinned")
+        for key in (*keys, "skipped", "error"):
             value = r[key]
             assert isinstance(value, int)
             totals[key] += value
         totals["parse_errors"] += len(perr)
     out.append(
         f"| **Total** | {totals['files']} | {totals['declarations']} | {totals['outdated']} | "
+        f"{totals['missing']} | {totals['yanked']} | "
         f"{totals['ok']} | {totals['unpinned']} | {totals['skipped']} | {totals['error']} | "
         f"{totals['parse_errors']} | {elapsed:.1f} |"
     )
@@ -191,6 +194,22 @@ def render(
         out.append(
             f"| {f['repo']} | {f['file']}:{f['line']} | `{f['current']}` | `{f['suggested']}` | "
             f"{f['bump']} | {str(f.get('note') or '')[:80]} |"
+        )
+    # Missing and yanked findings are rare and the most consequential, so every one of them
+    # is listed for review. They are kept out of the outdated sample so the sample stays
+    # comparable with earlier runs. (Before 0.2, missing GitHub Action refs were "outdated".)
+    withdrawn = [f for f in findings if f["status"] in ("missing", "yanked")]
+    out += [
+        "",
+        f"## All {len(withdrawn)} missing and yanked findings for manual review",
+        "",
+        "| Repo | Location | Status | Current | Suggested | Note |",
+        "|---|---|---|---|---|---|",
+    ]
+    for f in withdrawn:
+        out.append(
+            f"| {f['repo']} | {f['file']}:{f['line']} | {f['status']} | `{f['current']}` | "
+            f"`{f['suggested']}` | {str(f.get('note') or '')[:120]} |"
         )
     return out
 

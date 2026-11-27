@@ -71,3 +71,18 @@ class NpmRegistry(Registry):
             "url": f"https://www.npmjs.com/package/{name}/v/{version}",
             "details": details,
         }
+
+    def fetch_release(self, name: str, version: str, http: HttpClient) -> dict[str, Any] | None:
+        # The ``latest`` document says nothing about other versions, and the packument that
+        # lists them all can be many megabytes, so ask for this one version (a few KB).
+        if not _NAME_RE.match(name):
+            raise RegistryError(f"invalid npm package name: {name!r}")
+        url = f"https://registry.npmjs.org/{quote(name, safe='@')}/{quote(version)}"
+        data = as_dict(http.get_json(url))
+        if as_str(data.get("version")) != version:
+            raise RegistryError(f"registry answered with another version for {version}")
+        facts: dict[str, Any] = {"published": True}
+        deprecated = clean_text(data.get("deprecated"))
+        if deprecated:
+            facts["deprecated"] = deprecated
+        return facts

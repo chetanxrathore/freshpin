@@ -20,7 +20,7 @@ AI coding agents pick versions from training data that is months or years old. S
 |---|---|
 | **CLI** (`freshpin`) | Queries PyPI, npm, crates.io, GitHub and endoflife.date concurrently, caches the results for 6 hours, and works offline from the cache. Pure Python standard library, so it has zero dependencies. |
 | **Skill** (`skills/freshpin/SKILL.md`) | Tells Claude Code never to guess a version: run `freshpin resolve` before writing a manifest, and `freshpin audit` before finishing. |
-| **Hook** (`hooks/`) | A `PostToolUse` hook. When Claude writes a stale version into a manifest, workflow or Dockerfile, the hook returns the fix right away and Claude upgrades it. |
+| **Hook** (`hooks/`) | A `PostToolUse` hook. When Claude writes a stale, non-existent or yanked version into a manifest, workflow or Dockerfile, the hook returns the fix right away and Claude upgrades it. |
 
 ```text
 $ freshpin audit . --format agent
@@ -47,6 +47,7 @@ Every suggestion is checked against live sources, not guessed:
 - **GitHub Actions** versions come from the repository's latest release, and the commit SHA comes from its git tags. SHA-pinned workflows get the exact SHA to pin.
 - **Docker image tags** are confirmed on Docker Hub before they are suggested. If a short tag isn't published (`elasticsearch:9.5`), freshpin falls back to the full version (`9.5.7`). If an OS variant is retired (`python:3.15-buster`), it switches to a current one (`-trixie`).
 - **Runtimes with LTS lines** (Node.js, Ubuntu, MySQL, Java) get the newest *LTS* release, never a pre-release.
+- **Exact pins** (`==2.28.0`, npm `"1.2.3"`, Cargo `"=1.2.3"`) are checked against the versions the registry actually publishes. About 11% of the Python versions models write [don't exist](ROADMAP.md#where-freshpin-stands), so a made-up version is reported as `missing`, and a yanked or deprecated one as `yanked`.
 
 Measured on 2026-11-26 (details in [docs/VALIDATION.md](docs/VALIDATION.md)):
 
@@ -54,7 +55,7 @@ Measured on 2026-11-26 (details in [docs/VALIDATION.md](docs/VALIDATION.md)):
 
 - **100% agreement with independent sources:** 97/97 versions match across PyPI, npm, crates.io, GitHub and the official release feeds. 43/43 suggested Docker tags exist on Docker Hub, and 22/22 suggested `uses:` refs exist on GitHub.
 - **Robust on real projects:** across 18 popular open-source repositories, freshpin parsed 1,321 files and 12,135 version declarations with 0 crashes and 0 parse errors. The audit took about 4 seconds with a warm cache.
-- **Tested on every supported Python:** 317 offline tests pass on Python 3.9 through 3.15, including macOS's built-in 3.9, with 94% branch coverage.
+- **Tested on every supported Python:** 393 offline tests pass on Python 3.9 through 3.15, including macOS's built-in 3.9, with 95% branch coverage.
 - **The plugin passes Claude Code's validator:** `claude plugin validate --strict` reports nothing. The A/B eval suite ships in [`evals/`](evals/).
 
 ---
@@ -78,15 +79,7 @@ cp -r skills/freshpin ~/.claude/skills/freshpin
 
 ### Standalone CLI
 
-```bash
-uv tool install git+https://github.com/chetanxrathore/freshpin
-```
-
-```bash
-pipx install git+https://github.com/chetanxrathore/freshpin
-```
-
-Once a release is on PyPI (see [PUBLISHING.md](PUBLISHING.md)):
+freshpin is on [PyPI](https://pypi.org/project/freshpin/):
 
 ```bash
 uv tool install freshpin
@@ -94,6 +87,18 @@ uv tool install freshpin
 
 ```bash
 pipx install freshpin
+```
+
+`pip install freshpin` also works inside a virtual environment. To run it once without installing anything:
+
+```bash
+uvx freshpin audit .
+```
+
+To try unreleased changes from `main`:
+
+```bash
+uv tool install git+https://github.com/chetanxrathore/freshpin
 ```
 
 ### Cursor, Codex, Gemini CLI and other agents
@@ -124,7 +129,7 @@ Fail the build when something is outdated:
 ```yaml
 - uses: actions/checkout@v7
 - uses: astral-sh/setup-uv@v10.4.0
-- run: uvx --from git+https://github.com/chetanxrathore/freshpin freshpin audit . --fail-on-outdated
+- run: uvx freshpin audit . --fail-on-outdated
   env:
     GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}  # optional: freshpin also works without a token
 ```
@@ -175,7 +180,7 @@ pyproject.toml:4            requests>=2.31             2.34.2   ok
 | Flag | Meaning |
 |---|---|
 | `--format agent` / `--json` | Compact `file:line \| current -> latest` lines for agents, or JSON for tools. |
-| `--fail-on-outdated` | Exit with status 1 if anything is outdated. Use it in CI and hooks. |
+| `--fail-on-outdated` | Exit with status 1 if anything is `outdated`, `missing` or `yanked`. Use it in CI and hooks. |
 | `--level major\|minor\|patch` | Smallest bump to report. The default is `minor`, so patch-only drift is ignored. |
 | `--ignore NAME` | Skip a dependency by name or glob. Repeatable. |
 | `--exclude GLOB` | Skip paths, e.g. `--exclude 'examples/*'`. Repeatable. |
@@ -185,6 +190,28 @@ pyproject.toml:4            requests>=2.31             2.34.2   ok
 | `--offline` / `--no-cache` / `--ttl 30m` / `--pre` / `--timeout 5` | Lookup behaviour. These also work with `resolve`. |
 
 To keep an old version on purpose, add `# freshpin: ignore` on that line in TOML, YAML, Dockerfiles or requirements files.
+
+Each declaration gets one status. The first three need a change: `--format agent` and the hook list them, and `--fail-on-outdated` fails on them.
+
+| Status | Meaning |
+|---|---|
+| `outdated` | Behind the latest stable release by at least `--level`, or end-of-life. |
+| `missing` | The exact version pinned is not published on the registry (`django==4.2.99`), or a `uses:` ref is not a tag or branch of the action. Installing it fails. Reported at every `--level`. |
+| `yanked` | The exact version pinned was withdrawn: yanked on PyPI or crates.io, or deprecated on npm (while the latest release is not). It may still install, but its maintainers say not to use it. Reported at every `--level`. |
+| `ok` | Current. |
+| `unpinned` | No constraint, or one that accepts anything (`*`, `latest`, a branch, a floating image tag). |
+| `skipped` | Not checked: git or path dependencies, untracked images, `# freshpin: ignore`. |
+| `error` | The lookup failed, for example offline with nothing cached, or an unknown package. |
+
+`missing` and `yanked` are separate statuses rather than kinds of `outdated`: a pin can be one release behind and also not exist, and tools reading `--json` can tell a version that will not install from one that is merely old. In `--format agent` output those lines are tagged `[missing]` or `[yanked]`, followed by the bump size when the fix is an upgrade (`[yanked, patch]`):
+
+```text
+freshpin: 2 to fix of 3 checked (1 missing, 1 yanked) - use the versions shown:
+requirements.txt:2 | django==4.2.99 -> django==4.2.30 [missing] 4.2.99 does not exist on PyPI; 4.2.30 is the newest 4.x release (6.1.3 is the latest)
+Cargo.toml:6 | tokio = "=1.54.0" -> tokio = "=1.54.1" [yanked, patch] 1.54.0 is yanked on crates.io
+```
+
+In `--json` output every finding has a `flagged` field: `true` for `outdated`, `missing` and `yanked`. Filter on it rather than on `status == "outdated"`. Since 0.2, a `uses:` ref that doesn't exist is reported as `missing`; in 0.1 it was `outdated`.
 
 ### The `PostToolUse` hook in action
 
@@ -218,9 +245,9 @@ How the hook behaves:
 
 | Prefix | Source | Notes |
 |---|---|---|
-| `pypi:` | `https://pypi.org/pypi/<pkg>/json` | Stable releases only. Excludes `a`/`b`/`rc`/`dev` and fully yanked releases. |
-| `npm:` | `https://registry.npmjs.org/<pkg>/latest` | Scoped packages work (`npm:@types/node`). Deprecations are reported. |
-| `crates:` | `https://crates.io/api/v1/crates/<crate>` | Uses `max_stable_version`. |
+| `pypi:` | `https://pypi.org/pypi/<pkg>/json` | Stable releases only. Excludes `a`/`b`/`rc`/`dev` and fully yanked releases. The same response lists every release, so exact pins are checked at no extra cost. |
+| `npm:` | `https://registry.npmjs.org/<pkg>/latest` | Scoped packages work (`npm:@types/node`). Deprecations are reported. An exact pin that is not the latest release costs one small, cached lookup of `https://registry.npmjs.org/<pkg>/<version>`. |
+| `crates:` | `https://crates.io/api/v1/crates/<crate>` | Uses `max_stable_version`. The same response lists every release and its yank status, so `=` pins are checked at no extra cost. |
 | `gha:` | `github.com/<owner>/<repo>/releases/latest` and git refs (no API quota); REST API when `GITHUB_TOKEN`/`GH_TOKEN` is set | Each path falls back to the other. Returns the tag and its commit SHA. Works for any GitHub release, not only Actions. |
 | `eol:` | `https://endoflife.date/api/<product>.json` | Accepts any endoflife.date product, plus aliases (`postgres`, `node`, `golang`, `mongo`, `alpine`...). |
 | `docker:` | endoflife.date, by image name | `python`, `node`, `postgres`, `mysql`, `mariadb`, `redis`, `valkey`, `mongo`, `golang`, `rust`, `ruby`, `php`, `ubuntu`, `debian`, `alpine`, `nginx`, `httpd`, `rabbitmq`, `elasticsearch`, `eclipse-temurin`, ... (`freshpin ecosystems` lists them all) |
@@ -243,12 +270,28 @@ How the hook behaves:
 - **LTS policy:** for products with LTS lines (Node.js, Ubuntu, MySQL, Temurin...) freshpin recommends the newest **LTS** release. Everything else gets the newest supported release.
 - **GitHub Actions** are compared at the tag's precision: `@v4` against the latest major, `@v4.1.1` against the full version.
 
+### How missing and yanked pins are found
+
+- **Only exact pins are checked:** `==`/`===` in requirements files and `pyproject.toml`, a bare or `=` version in `package.json` and Poetry tables, and Cargo `=`. Ranges such as `>=`, `^`, `~=` and wildcards (`==2.*`) are not, and neither is Cargo's bare `"1.2.3"`, which is a caret range.
+- **Versions are compared the way installers compare them**, so `requests==2.32` matches the published `2.32.0`.
+- **No false alarms from the cache:** a version can be published after freshpin cached the version list. A pin that is missing from a *cached* list is fetched again, live, before it is reported. A version confirmed missing that way is remembered for 10 minutes, so an agent that edits the file again before fixing it doesn't trigger a new download each time.
+- **Unverified pins are named, not hidden:** when the live check can't run (offline, rate-limited, network error), the pin is not reported as `missing`. `--format agent` lists it on an `unverified:` line, `--json` marks it `"unconfirmed": true`, and the hook passes it to Claude as context without blocking.
+- **npm deprecations:** a deprecated version counts as `yanked` only when the latest release is not deprecated. When the whole package is deprecated, there is no release to move to, so the deprecation notice is attached to the finding as before.
+- **The fix stays on the pin's release line:** a missing or yanked pin moves to the newest stable, non-yanked release of its own major version (its minor version on `0.x`, where minor releases are the breaking ones). So `django==4.2.99` becomes `django==4.2.30`, not 6.x. Moving to a new major is left to the normal `outdated` check, where agents can see the `[major]` tag and keep the older line for a reason. The latest release is suggested only when the line has no other release. npm can't list a package's versions cheaply (the full list for `next` is about 25 MB), so there the suggestion is the latest release. When that is a breaking upgrade, the note gives the `npm view` command that finds the newest release on the line.
+- **Private sources are not second-guessed:** a pin that may install from somewhere other than PyPI is not checked, because a version missing from PyPI can exist on a private index. That covers:
+  - requirements files with `--index-url`, `--extra-index-url`, `--find-links` or `--no-index`, unless the URL is PyPI's own
+  - packages listed in `[tool.uv.sources]`
+  - every package when `pyproject.toml` has a `[[tool.uv.index]]` entry that is not `explicit = true`, or `[tool.uv]` index settings
+  - Poetry dependencies with `source = "..."`, and every package when a `[[tool.poetry.source]]` entry is not `priority = "explicit"`
+
+  These pins are still compared with PyPI's latest release, as before.
+
 ### Configuration
 
 | Variable | Default | |
 |---|---|---|
 | `FRESHPIN_CACHE_DIR` | `$XDG_CACHE_HOME/freshpin` or `~/.cache/freshpin` | Cache location (`cache.json`). |
-| `FRESHPIN_CACHE_TTL` | `6h` | How long results stay fresh, e.g. `30m`, `1d`. Expired entries are still used as an offline fallback. |
+| `FRESHPIN_CACHE_TTL` | `6h` | How long results stay fresh, e.g. `30m`, `1d`. Expired entries are still used as an offline fallback, for up to 30 days (or the TTL, if longer), and then dropped. |
 | `GITHUB_TOKEN` / `GH_TOKEN` | unset | Optional. When set, freshpin asks the GitHub REST API first; without it, it uses the token-free web and git endpoints. |
 | `FRESHPIN_OFFLINE` | unset | Hook only: use cached data and never touch the network. |
 | `FRESHPIN_HOOK`, `FRESHPIN_HOOK_MODE`, `FRESHPIN_HOOK_TIMEOUT`, `FRESHPIN_HOOK_DEBUG` | | Hook controls, described above. |
@@ -256,7 +299,7 @@ How the hook behaves:
 
 `freshpin cache-clear` empties the cache. `freshpin ecosystems` lists every prefix, alias and tracked Docker image.
 
-**Exit codes:** `0` OK · `1` outdated found (with `--fail-on-outdated`) or a `resolve` lookup failed · `2` usage error.
+**Exit codes:** `0` OK · `1` outdated, missing or yanked versions found (with `--fail-on-outdated`) or a `resolve` lookup failed · `2` usage error.
 
 ---
 

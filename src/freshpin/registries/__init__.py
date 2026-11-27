@@ -119,6 +119,16 @@ def parse_query(text: str, default_ecosystem: str | None = None) -> Query:
     return Query(ecosystem, REGISTRIES[ecosystem].normalize(name), raw)
 
 
+# How long a live "this version does not exist" answer is trusted. Short, because the
+# version may be published any minute; long enough that an agent editing the same file
+# several times before fixing a made-up pin does not re-download the package each time.
+MISSING_TTL_SECONDS = 10 * 60
+
+
+def _release_key(ecosystem: str, name: str, version: str) -> str:
+    return f"release:{ecosystem}:{name}@{version}"
+
+
 class Resolver:
     """Resolve latest versions concurrently with caching and stale-cache fallback."""
 
@@ -169,7 +179,10 @@ class Resolver:
         self.cache.flush()
         return result
 
-    def _resolve_one(self, ecosystem: str, name: str, query: str | None = None) -> Resolution:
+    def _resolve_one(
+        self, ecosystem: str, name: str, query: str | None = None, *, refresh: bool = False
+    ) -> Resolution:
+        """``refresh`` skips a fresh cache entry (it is still the fallback when offline)."""
         query = query or f"{ecosystem}:{name}"
         try:
             registry = self.registries[canonical_ecosystem(ecosystem)]
@@ -179,11 +192,12 @@ class Resolver:
         name = registry.normalize(name)
         key = self._key(eco, name)
         entry = self.cache.get(key)
-        if entry is not None and entry.fresh:
+        if entry is not None and entry.fresh and not refresh:
             return self._from_data(eco, name, query, entry.data, cached=True)
         if self.offline:
             if entry is not None:
-                return self._from_data(eco, name, query, entry.data, cached=True, stale=True)
+                stale = not entry.fresh
+                return self._from_data(eco, name, query, entry.data, cached=True, stale=stale)
             return Resolution(eco, name, query, error="offline and not in cache")
         try:
             data = registry.fetch(name, self.http, include_pre=self.include_pre)
@@ -191,14 +205,17 @@ class Resolver:
             return Resolution(eco, name, query, error=f"not found on {eco}")
         except RegistryError as exc:
             if entry is not None:  # graceful offline fallback
-                return self._from_data(eco, name, query, entry.data, cached=True, stale=True)
+                stale = not entry.fresh
+                return self._from_data(eco, name, query, entry.data, cached=True, stale=stale)
             return Resolution(eco, name, query, error=str(exc))
         except Exception as exc:  # a registry bug must not take down an audit
             return Resolution(eco, name, query, error=f"{type(exc).__name__}: {exc}")
         self.cache.set(key, data)
         return self._from_data(eco, name, query, data)
 
-    def resolve_queries(self, queries: Sequence[Query]) -> list[Resolution]:
+    def resolve_queries(
+        self, queries: Sequence[Query], *, refresh: bool = False
+    ) -> list[Resolution]:
         """Resolve many queries concurrently, preserving input order."""
         unique: dict[tuple[str, str], Query] = {}
         for q in queries:
@@ -208,7 +225,9 @@ class Resolver:
             workers = min(self.max_workers, len(unique))
             with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="freshpin") as pool:
                 futures = {
-                    key: pool.submit(self._resolve_one, q.ecosystem, q.name, q.text)
+                    key: pool.submit(
+                        self._resolve_one, q.ecosystem, q.name, q.text, refresh=refresh
+                    )
                     for key, q in unique.items()
                 }
                 results = {key: fut.result() for key, fut in futures.items()}
@@ -219,12 +238,77 @@ class Resolver:
             out.append(res if res.query == q.text else _with_query(res, q.text))
         return out
 
-    def resolve_many(self, pairs: Iterable[tuple[str, str]]) -> dict[tuple[str, str], Resolution]:
-        """Resolve ``(ecosystem, name)`` pairs; returns a mapping keyed by the input pair."""
+    def resolve_many(
+        self, pairs: Iterable[tuple[str, str]], *, refresh: bool = False
+    ) -> dict[tuple[str, str], Resolution]:
+        """Resolve ``(ecosystem, name)`` pairs; returns a mapping keyed by the input pair.
+
+        ``refresh`` fetches again even when the cache is fresh (used to confirm a pin that
+        is missing from a cached version list before reporting it)."""
         items = list(dict.fromkeys(pairs))
         queries = [Query(eco, name, f"{eco}:{name}") for eco, name in items]
-        resolved = self.resolve_queries(queries)  # same length and order as ``items``
+        resolved = self.resolve_queries(queries, refresh=refresh)  # same order as ``items``
         return dict(zip(items, resolved))
+
+    def check_releases(
+        self, items: Iterable[tuple[str, str, str]]
+    ) -> dict[tuple[str, str, str], dict[str, Any]]:
+        """Facts about exact ``(ecosystem, name, version)`` releases from registries that need
+        a lookup per version (:meth:`Registry.fetch_release`, i.e. npm), concurrently.
+
+        ``{"published": False}`` comes only from a live "not found", and is trusted for
+        :data:`MISSING_TTL_SECONDS` only, since the version may be published any minute.
+        Unknown answers (offline and not cached, network errors, registries without
+        per-version lookups) are left out.
+        """
+        todo = list(dict.fromkeys(items))
+        if not todo:
+            return {}
+        workers = min(self.max_workers, len(todo))
+        with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="freshpin") as pool:
+            answers = list(pool.map(lambda item: self._check_release(*item), todo))
+        self.cache.flush()
+        return {item: facts for item, facts in zip(todo, answers) if facts is not None}
+
+    def _check_release(self, ecosystem: str, name: str, version: str) -> dict[str, Any] | None:
+        registry = self.registries.get(ecosystem)
+        if registry is None:
+            return None
+        key = _release_key(ecosystem, name, version)
+        entry = self.cache.get(key)
+        if entry is not None:
+            if entry.data.get("published") is False:
+                if entry.age < MISSING_TTL_SECONDS:
+                    return entry.data
+                entry = None  # an old "missing" answer proves nothing
+            elif entry.fresh or self.offline:
+                return entry.data
+        if self.offline:
+            return None
+        try:
+            facts = registry.fetch_release(name, version, self.http)
+        except NotFoundError:
+            facts = {"published": False}
+        except RegistryError:
+            return entry.data if entry is not None else None
+        except Exception:  # a registry bug must not take down an audit
+            return None
+        if facts is not None:
+            self.cache.set(key, facts)
+        return facts
+
+    def confirmed_missing(self, ecosystem: str, name: str, version: str) -> bool:
+        """True when a live lookup found ``version`` missing within :data:`MISSING_TTL_SECONDS`."""
+        entry = self.cache.get(_release_key(ecosystem, name, version))
+        return (
+            entry is not None
+            and entry.data.get("published") is False
+            and entry.age < MISSING_TTL_SECONDS
+        )
+
+    def remember_missing(self, ecosystem: str, name: str, version: str) -> None:
+        """Record that a live lookup just found ``version`` missing (:meth:`confirmed_missing`)."""
+        self.cache.set(_release_key(ecosystem, name, version), {"published": False})
 
 
 def _with_query(res: Resolution, query: str) -> Resolution:

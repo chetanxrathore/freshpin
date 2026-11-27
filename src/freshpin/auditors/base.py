@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass, replace
 from datetime import date
 from pathlib import Path
@@ -23,6 +24,7 @@ from freshpin.versioning import (
     Version,
     assess,
     bump_kind,
+    is_breaking,
     meets_level,
     parse_pep440,
     parse_semver_range,
@@ -31,8 +33,22 @@ from freshpin.versioning import (
     truncate,
 )
 
-Status = Literal["outdated", "ok", "unpinned", "skipped", "error"]
-STATUSES: tuple[Status, ...] = ("outdated", "error", "ok", "unpinned", "skipped")
+Status = Literal["outdated", "missing", "yanked", "ok", "unpinned", "skipped", "error"]
+STATUSES: tuple[Status, ...] = (
+    "outdated",
+    "missing",
+    "yanked",
+    "error",
+    "ok",
+    "unpinned",
+    "skipped",
+)
+# Findings that need a change. ``--format agent`` and the hook list them, and
+# ``--fail-on-outdated`` fails on them:
+#   outdated - behind the latest release (at the chosen --level), or end-of-life
+#   missing  - the pinned version (or action ref) does not exist, so installing it fails
+#   yanked   - the pinned version was withdrawn: yanked on PyPI/crates.io, deprecated on npm
+FLAGGED: tuple[Status, ...] = ("outdated", "missing", "yanked")
 
 # How a spec should be interpreted.
 #   pep508  - PEP 440 specifier (pyproject / requirements)
@@ -79,6 +95,9 @@ class DependencyRef:
     eol_only: bool = False  # for kind == "cycle": only flag end-of-life entries
     sha: str = ""  # for kind == "gha": the pinned commit SHA
     image: str = ""  # for Docker images: the repository as written (e.g. "postgres")
+    # Set when the package may install from somewhere other than the public registry (a
+    # custom index, a uv/Poetry source): its exact pin is then not checked for existence.
+    private_source: str = ""
     static_status: Status | None = None  # decided without a lookup (skipped/unpinned)
     note: str = ""
 
@@ -103,10 +122,18 @@ class Finding:
     bump: Bump | None = None
     note: str = ""
     verified: bool | None = None  # Docker: suggested tag confirmed on Docker Hub
+    # An exact pin absent from a cached version list that could not be re-checked live
+    # (offline, rate-limited, network error): it may not exist, but that is not confirmed.
+    unconfirmed: bool = False
 
     @property
     def current(self) -> str:
         return self.ref.current
+
+    @property
+    def flagged(self) -> bool:
+        """True when the declaration needs a change (see :data:`FLAGGED`)."""
+        return self.status in FLAGGED
 
     def location(self, base: Path | None = None) -> str:
         return f"{display_path(self.ref.file, base)}:{self.ref.line}"
@@ -122,6 +149,9 @@ class Finding:
             "current": self.current,
             "spec": self.ref.spec,
             "status": self.status,
+            # needs a change: outdated, missing or yanked (filter on this rather than on one
+            # status, so new statuses are picked up)
+            "flagged": self.flagged,
             "latest": self.latest,
             "suggested": self.suggested,
             "bump": self.bump,
@@ -130,6 +160,8 @@ class Finding:
             out["note"] = self.note
         if self.verified is not None:
             out["verified"] = self.verified
+        if self.unconfirmed:
+            out["unconfirmed"] = True
         return out
 
 
@@ -212,6 +244,9 @@ def honour_ignore(ref: DependencyRef, raw_line: str) -> DependencyRef:
 # ---------------------------------------------------------------------------
 
 _FALLBACK_OP = {"pep508": ">=", "poetry": "^", "npm": "^", "cargo": ""}
+# Registries whose exact pins are checked against the published releases.
+REGISTRY_TITLES = {"pypi": "PyPI", "npm": "npm", "crates": "crates.io"}
+_PIN_KINDS = ("pep508", "poetry", "npm", "cargo")
 
 
 def _parse_constraint(kind: str, spec: str) -> Constraint:
@@ -222,6 +257,142 @@ def _parse_constraint(kind: str, spec: str) -> Constraint:
             if kind == "pep508":
                 raise
     return parse_semver_range(spec, bare="caret" if kind == "cargo" else "exact")
+
+
+def _exact_version(constraint: Constraint) -> Version | None:
+    return constraint.alternatives[0][0].version if constraint.is_exact else None
+
+
+def _checks_releases(ref: DependencyRef) -> bool:
+    """True when ``ref`` installs from a public registry whose releases freshpin can list."""
+    return ref.ecosystem in REGISTRY_TITLES and not ref.private_source
+
+
+def pinned_version(ref: DependencyRef) -> Version | None:
+    """The exact version ``ref`` pins, if it is a package pin whose release can be checked:
+    ``==2.28.0`` / ``===2.28.0`` (PEP 440), a bare npm or Poetry version (``1.2.3``,
+    ``=1.2.3``) or Cargo ``=1.2.3``. Ranges, wildcards (``==2.*``) and Cargo's bare
+    ``1.2.3`` (a caret range) are not exact pins, and neither is anything installed from a
+    private source (see :attr:`DependencyRef.private_source`)."""
+    if not _checks_releases(ref) or ref.kind not in _PIN_KINDS or not ref.spec.strip():
+        return None
+    try:
+        return _exact_version(_parse_constraint(ref.kind, ref.spec))
+    except ConstraintError:
+        return None
+
+
+ReleaseState = Literal["published", "missing", "yanked", "unconfirmed", "unknown"]
+
+
+def _same_version(candidates: Iterable[object], version: Version) -> str | None:
+    """The spelling in ``candidates`` of ``version`` (``2.32`` matches ``2.32.0``), if any."""
+    names = [str(c) for c in candidates]
+    if version.raw in names:
+        return version.raw
+    return next((n for n in names if parse_version(n) == version), None)
+
+
+def release_state(res: Resolution, version: Version) -> tuple[ReleaseState, str]:
+    """What the registry data in ``res`` says about one exact ``version``, plus a reason
+    (the yank reason or npm deprecation notice) when there is one.
+
+    * PyPI and crates.io list every release in the package lookup (``versions`` and
+      ``yanked`` details). A version absent from a list that came from the *cache* is
+      ``unconfirmed`` rather than ``missing``: it may have been published since.
+    * npm has no such list; the audit merges per-version lookups in as ``releases``.
+      A version-level deprecation counts as a yank, unless the whole package is deprecated
+      (its latest release is too), when there is no release to move to.
+    * ``releases`` also carries ``{"published": False}`` for a version that a live lookup
+      found missing minutes ago, so a cached list need not be fetched again to confirm it.
+    * ``unknown``: the data cannot tell (no list, lookup unavailable).
+    """
+    details = res.details
+    yanked = details.get("yanked")
+    if isinstance(yanked, dict):
+        match = _same_version(yanked, version)
+        if match is not None:
+            return "yanked", str(yanked.get(match) or "")
+    releases = details.get("releases")
+    facts = releases.get(version.raw) if isinstance(releases, dict) else None
+    confirmed_missing = isinstance(facts, dict) and facts.get("published") is False
+    versions = details.get("versions")
+    if isinstance(versions, list):
+        if _same_version(versions, version) is not None:
+            return "published", ""
+        return ("unconfirmed" if res.cached and not confirmed_missing else "missing"), ""
+    if isinstance(facts, dict):
+        if facts.get("published") is False:
+            return "missing", ""
+        notice = facts.get("deprecated")
+        if isinstance(notice, str) and notice and not details.get("deprecated"):
+            return "yanked", notice
+        return "published", ""
+    if res.version is not None and parse_version(res.version) == version:
+        return "published", ""
+    return "unknown", ""
+
+
+def _line_label(version: Version) -> str:
+    """The release line a version belongs to: ``4.x``, or ``0.110.x`` on ``0.x``, where a
+    minor release is the breaking one."""
+    return f"0.{version.minor}.x" if version.major == 0 else f"{version.major}.x"
+
+
+def _same_line(a: Version, b: Version) -> bool:
+    return a.major == b.major and (a.major != 0 or a.minor == b.minor)
+
+
+def _newest_on_line(res: Resolution, pinned: Version) -> Version | None:
+    """The newest stable, non-yanked release on ``pinned``'s own line (same major, or same
+    minor on ``0.x``) other than ``pinned``, from the registry's version list.
+
+    ``None`` when the registry gives no list (npm) or the line has no other release.
+    """
+    versions = res.details.get("versions")
+    if not isinstance(versions, list):
+        return None
+    yanked = res.details.get("yanked")
+    withdrawn = {str(k) for k in yanked} if isinstance(yanked, dict) else set()
+    best: Version | None = None
+    for raw in versions:
+        if str(raw) in withdrawn:
+            continue
+        candidate = parse_version(str(raw))
+        if candidate is None or candidate.is_prerelease or candidate == pinned:
+            continue
+        if _same_line(candidate, pinned) and (best is None or candidate > best):
+            best = candidate
+    return best
+
+
+def _replacement(
+    ref: DependencyRef, res: Resolution, pinned: Version, latest: Version
+) -> tuple[Version, str]:
+    """Where to move a missing or yanked pin, and a note when that is not plain sailing.
+
+    The fix stays on the pin's own release line when that line has another release, so a
+    mistyped ``django==4.2.99`` becomes the newest 4.2.x, not a new major version. The
+    latest release is suggested only when the line has nothing else (or the registry gives
+    no version list); the note then says it is a breaking upgrade.
+    """
+    latest_raw = res.version or latest.raw
+    line = _line_label(pinned)
+    target = _newest_on_line(res, pinned)
+    if target is not None and target != latest:
+        return target, f"{target.raw} is the newest {line} release ({latest_raw} is the latest)"
+    if not is_breaking(pinned, latest):
+        return latest, ""
+    note = f"{latest_raw} is a breaking upgrade"
+    if isinstance(res.details.get("versions"), list):
+        return latest, f"{note}: no other {line} release is available"
+    if ref.ecosystem == "npm":
+        selector = f"0.{pinned.minor}" if pinned.major == 0 else str(pinned.major)
+        return latest, (
+            f"{note}; to stay on {line}, use the newest {line} release"
+            f" (npm view {res.name}@{selector} version)"
+        )
+    return latest, note
 
 
 def evaluate(
@@ -253,7 +424,7 @@ def evaluate(
     elif ref.kind == "runtime":
         finding = _evaluate_runtime(ref, resolution, latest, today)
     else:
-        finding = _evaluate_constraint(ref, resolution.version, latest, level, floors)
+        finding = _evaluate_constraint(ref, resolution, latest, level, floors)
     extra = [n for n in (ref.note, finding.note) if n]
     deprecated = resolution.details.get("deprecated")
     if isinstance(deprecated, str):
@@ -266,8 +437,9 @@ def evaluate(
 
 
 def _evaluate_constraint(
-    ref: DependencyRef, latest_raw: str, latest: Version, level: Bump, floors: bool = True
+    ref: DependencyRef, res: Resolution, latest: Version, level: Bump, floors: bool = True
 ) -> Finding:
+    latest_raw = res.version or latest.raw
     if not ref.spec.strip():
         return Finding(ref, "unpinned", latest=latest_raw, note="no version constraint")
     try:
@@ -276,10 +448,46 @@ def _evaluate_constraint(
         return Finding(ref, "skipped", latest=latest_raw, note=str(exc))
     if constraint.is_unbounded:
         return Finding(ref, "unpinned", latest=latest_raw, note="accepts any version")
+    fallback_op = _FALLBACK_OP.get(ref.kind, ">=")
+    pinned = _exact_version(constraint) if _checks_releases(ref) else None
+    unconfirmed = ""
+    if pinned is not None:
+        # Checked at every --level and in library mode: the pin cannot be installed, or
+        # its maintainers withdrew it.
+        state, reason = release_state(res, pinned)
+        registry = REGISTRY_TITLES[ref.ecosystem]
+        if state in ("missing", "yanked"):
+            status: Status = "missing" if state == "missing" else "yanked"
+            if status == "missing":
+                note = f"{pinned.raw} does not exist on {registry}"
+            else:
+                verb = "deprecated" if ref.ecosystem == "npm" else "yanked"
+                note = f"{pinned.raw} is {verb} on {registry}" + (f": {reason}" if reason else "")
+            target, how = _replacement(ref, res, pinned, latest)
+            suggested = None
+            if target != pinned:
+                suggested = ref.render(rewrite_spec(constraint, target, fallback_op=fallback_op))
+            return Finding(
+                ref,
+                status,
+                latest=latest_raw,
+                suggested=suggested,
+                bump=bump_kind(pinned, target),
+                note="; ".join(n for n in (note, how) if n),
+            )
+        if state == "unconfirmed":
+            unconfirmed = f"{pinned.raw} is not in the cached {registry} version list (unconfirmed)"
     result = assess(constraint, latest, level=level, floors=floors)
     if not result.outdated:
-        return Finding(ref, "ok", latest=latest_raw, bump=result.bump)
-    new_spec = rewrite_spec(constraint, latest, fallback_op=_FALLBACK_OP.get(ref.kind, ">="))
+        return Finding(
+            ref,
+            "ok",
+            latest=latest_raw,
+            bump=result.bump,
+            note=unconfirmed,
+            unconfirmed=bool(unconfirmed),
+        )
+    new_spec = rewrite_spec(constraint, latest, fallback_op=fallback_op)
     note = (
         "constraint excludes the latest release"
         if result.excludes_latest
@@ -291,7 +499,8 @@ def _evaluate_constraint(
         latest=latest_raw,
         suggested=ref.render(new_spec),
         bump=result.bump,
-        note=note,
+        note="; ".join(n for n in (note, unconfirmed) if n),
+        unconfirmed=bool(unconfirmed),
     )
 
 
@@ -331,7 +540,7 @@ def _evaluate_gha(ref: DependencyRef, res: Resolution, latest: Version, level: B
     if _gha_missing(ref, current, res):
         # Reported at every --level: GitHub cannot resolve the action, so the job never runs.
         note = f"{ref.spec} is not a tag or branch of {ref.name}, so the job fails to start"
-        return Finding(ref, "outdated", latest=latest_raw, suggested=ref.render(new_ref), note=note)
+        return Finding(ref, "missing", latest=latest_raw, suggested=ref.render(new_ref), note=note)
     target = truncate(latest, current.precision)
     bump = bump_kind(current, target)
     if not meets_level(bump, level):

@@ -485,7 +485,7 @@ def test_gha_refs_that_do_not_exist_are_flagged(tmp_path: Path) -> None:
     for level in ("minor", "major"):
         found = by_location(audit_paths([wf], resolver(), today=TODAY, base=tmp_path, level=level))
         missing = found[".github/workflows/release.yml:4"]
-        assert missing.status == "outdated"  # at every level: the job cannot start
+        assert missing.status == "missing"  # at every level: the job cannot start
         assert missing.suggested == "pypa/gh-action-pypi-publish@v1.14.3"
         assert "v1 is not a tag or branch of pypa/gh-action-pypi-publish" in missing.note
         assert found[".github/workflows/release.yml:6"].status == "unpinned"

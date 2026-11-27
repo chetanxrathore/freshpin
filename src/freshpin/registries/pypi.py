@@ -26,6 +26,25 @@ def _has_installable_files(files: Any) -> bool:
     return any(isinstance(f, dict) and not f.get("yanked", False) for f in files)
 
 
+def release_index(releases: dict[str, Any]) -> tuple[list[str], dict[str, str]]:
+    """Every published version (one that has files) and the yanked ones with their reasons.
+
+    PyPI yanks a release by yanking all of its files (PEP 592). pip still installs a yanked
+    release when it is pinned with ``==``, which is why a yanked pin is worth flagging.
+    """
+    versions: list[str] = []
+    yanked: dict[str, str] = {}
+    for ver, files in releases.items():
+        entries = [f for f in files if isinstance(f, dict)] if isinstance(files, list) else []
+        if not entries:
+            continue  # registered without files (or all deleted): nothing can be installed
+        versions.append(ver)
+        if all(f.get("yanked", False) for f in entries):
+            reasons = (clean_text(f.get("yanked_reason")) for f in entries)
+            yanked[ver] = next((r for r in reasons if r), "")
+    return versions, yanked
+
+
 class PyPIRegistry(Registry):
     ecosystem: ClassVar[str] = "pypi"
     aliases: ClassVar[tuple[str, ...]] = ("pypi", "pip", "py", "python-package")
@@ -63,6 +82,10 @@ class PyPIRegistry(Registry):
         requires_python = as_str(info.get("requires_python"))
         if requires_python and info.get("version") == version:
             details["requires_python"] = requires_python
+        if releases:
+            details["versions"], yanked = release_index(releases)
+            if yanked:
+                details["yanked"] = yanked
         return {
             "version": version,
             "url": f"https://pypi.org/project/{name}/{version}/",

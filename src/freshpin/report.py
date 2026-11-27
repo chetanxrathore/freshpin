@@ -6,9 +6,11 @@ import json
 import os
 import re
 import sys
+from collections import Counter
 from collections.abc import Sequence
 from typing import TYPE_CHECKING, Any, TextIO
 
+from freshpin.auditors.base import FLAGGED
 from freshpin.registries.base import Resolution
 from freshpin.registries.endoflife import OFFICIAL_IMAGES
 
@@ -138,15 +140,28 @@ def _summary_line(report: AuditReport) -> str:
 
 def format_audit_agent(report: AuditReport) -> str:
     """Ultra-compact, instruction-style output for LLM agents."""
-    outdated = report.outdated
+    flagged = report.flagged
+    checked = len(report.findings)
     lines: list[str] = []
-    if outdated:
-        lines.append(
-            f"freshpin: {len(outdated)} outdated of {len(report.findings)} checked"
-            " - upgrade to the latest stable versions:"
-        )
-        for f in outdated:
-            tail = f" [{f.bump}]" if f.bump else ""
+    if flagged:
+        tally = Counter(f.status for f in flagged)
+        if set(tally) == {"outdated"}:
+            lines.append(
+                f"freshpin: {len(flagged)} outdated of {checked} checked"
+                " - upgrade to the latest stable versions:"
+            )
+        else:
+            kinds = ", ".join(f"{tally[s]} {s}" for s in FLAGGED if tally[s])
+            lines.append(
+                f"freshpin: {len(flagged)} to fix of {checked} checked ({kinds})"
+                " - use the versions shown:"
+            )
+        for f in flagged:
+            # outdated lines carry the bump size; missing/yanked lines say what is wrong,
+            # plus the bump size when the fix is an upgrade ([missing, major])
+            tags: list[str] = [f.status] if f.status != "outdated" else []
+            tags += [f.bump] if f.bump else []
+            tail = f" [{', '.join(tags)}]" if tags else ""
             if f.note:
                 tail += f" {f.note}"
             lines.append(
@@ -154,16 +169,28 @@ def format_audit_agent(report: AuditReport) -> str:
             )
     else:
         lines.append(f"freshpin: OK - {len(report.findings)} checked, none outdated.")
-    errors = [f for f in report.findings if f.status == "error"]
-    if errors:
-        shown = "; ".join(f"{f.ref.ecosystem}:{f.ref.name} {f.note}" for f in errors[:5])
-        more = f" (+{len(errors) - 5} more)" if len(errors) > 5 else ""
-        lines.append(f"unverified: {shown}{more}")
+    unverified = [
+        f"{f.ref.ecosystem}:{f.ref.name} {f.note}" for f in report.findings if f.status == "error"
+    ] + [
+        f"{f.ref.ecosystem}:{f.ref.name} {f.ref.spec.strip()} may not exist"
+        " (not in the cached version list, and it could not be checked live)"
+        for f in report.unconfirmed
+    ]
+    if unverified:
+        more = f" (+{len(unverified) - 5} more)" if len(unverified) > 5 else ""
+        lines.append(f"unverified: {'; '.join(unverified[:5])}{more}")
     lines.extend(f"error: {e}" for e in report.errors)
     return "\n".join(lines)
 
 
-_STATUS_COLOR = {"outdated": "red", "error": "yellow", "ok": "green", "unpinned": "cyan"}
+_STATUS_COLOR = {
+    "outdated": "red",
+    "missing": "red",
+    "yanked": "red",
+    "error": "yellow",
+    "ok": "green",
+    "unpinned": "cyan",
+}
 
 
 def format_audit(
@@ -177,9 +204,9 @@ def format_audit(
     for f in report.findings:
         if f.status == "skipped" and not show_all:
             continue
-        status = f.status + (f" ({f.bump})" if f.status == "outdated" and f.bump else "")
+        status = f.status + (f" ({f.bump})" if f.flagged and f.bump else "")
         status = paint(status, _STATUS_COLOR.get(f.status, "dim"), color)
-        detail = f"-> {f.suggested}" if f.status == "outdated" and f.suggested else ""
+        detail = f"-> {f.suggested}" if f.flagged and f.suggested else ""
         if f.note:
             detail = f"{detail}  {f.note}".strip()
         rows.append([f.location(report.base), f.current, f.latest or "?", status, detail])

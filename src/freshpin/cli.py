@@ -128,7 +128,7 @@ def build_parser() -> argparse.ArgumentParser:
     audit.add_argument(
         "--fail-on-outdated",
         action="store_true",
-        help="exit with status 1 if anything is outdated (for CI and hooks)",
+        help="exit with status 1 if anything is outdated, missing or yanked (for CI and hooks)",
     )
     audit.add_argument(
         "--level",
@@ -221,7 +221,7 @@ def cmd_audit(args: argparse.Namespace, out: TextIO) -> int:
     write(format_audit(report, args.format, color=use_color(out), show_all=args.all), out)
     if not report.files and report.errors:
         return EXIT_USAGE
-    if args.fail_on_outdated and report.outdated:
+    if args.fail_on_outdated and report.flagged:
         return EXIT_FINDINGS
     return EXIT_OK
 

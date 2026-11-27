@@ -4,7 +4,7 @@
 Wire-up (see ``hooks/hooks.json``): runs after ``Write``/``Edit``/``MultiEdit`` and ``Bash``.
 When a manifest, workflow or Dockerfile was just written - by an edit tool, or by a shell
 command such as ``cat > Dockerfile <<EOF`` or ``npm install react@18`` - it audits what was
-written and, if any version is outdated, hands Claude a compact list of
+written and, if any version is outdated, missing or yanked, hands Claude a compact list of
 ``file:line | current -> latest`` fixes so it upgrades them immediately.
 
 Design rules:
@@ -48,6 +48,12 @@ FOOTER = (
     "required, keep it, add a `# freshpin: ignore` comment on that line where the format "
     "allows comments, and tell the user why."
 )
+# Nothing to fix, but an exact pin could not be confirmed: said as context, never blocking.
+ADVISORY_FOOTER = (
+    "freshpin could not confirm the versions listed as unverified. Check them with "
+    "`freshpin resolve <ecosystem>:<name>` before relying on them."
+)
+Audit = tuple[str, bool]  # (message, blocking)
 
 
 def plugin_root() -> Path:
@@ -168,7 +174,7 @@ def bash_targets(command: str, cwd: Path) -> tuple[list[Path], dict[Path, set[st
     return list(dict.fromkeys(written)), installs
 
 
-def audit_in_process(path: Path, lines: set[int] | None, cwd: Path) -> str | None:
+def audit_in_process(path: Path, lines: set[int] | None, cwd: Path) -> Audit | None:
     if lines is not None and not lines:
         return None
     return audit_many([path], cwd, None if lines is None else (lambda ref: ref.line in lines))
@@ -176,7 +182,9 @@ def audit_in_process(path: Path, lines: set[int] | None, cwd: Path) -> str | Non
 
 def audit_many(
     paths: list[Path], cwd: Path, line_filter: Callable[[Any], bool] | None
-) -> str | None:
+) -> Audit | None:
+    """The agent-format report, and whether it should block: findings to fix block, while
+    pins that could only not be confirmed (the registry was unreachable) are context."""
     from freshpin.auditors import audit_paths
     from freshpin.cache import Cache
     from freshpin.registries import HttpClient, Resolver
@@ -189,12 +197,14 @@ def audit_many(
         offline=os.environ.get("FRESHPIN_OFFLINE", "").lower() in ("1", "true", "yes"),
     )
     report = audit_paths(paths, resolver, base=cwd, line_filter=line_filter)
-    if not report.outdated:
-        return None
-    return format_audit_agent(report)
+    if report.flagged:  # outdated, missing or yanked
+        return format_audit_agent(report), True
+    if report.unconfirmed:
+        return format_audit_agent(report), False
+    return None
 
 
-def audit_bash(command: str, cwd: Path) -> str | None:
+def audit_bash(command: str, cwd: Path) -> Audit | None:
     """Audit what a shell command just wrote (whole files) or installed (named packages)."""
     from freshpin.auditors import detect_kind
 
@@ -216,7 +226,7 @@ def audit_bash(command: str, cwd: Path) -> str | None:
     return audit_many(list(dict.fromkeys([*files, *manifests])), cwd, keep)
 
 
-def audit_via_cli(path: Path) -> str | None:
+def audit_via_cli(path: Path) -> Audit | None:
     exe = shutil.which("freshpin")
     if exe is None:
         return None
@@ -227,12 +237,13 @@ def audit_via_cli(path: Path) -> str | None:
         timeout=50,
         check=False,
     )
-    return proc.stdout.strip() if proc.returncode == 1 and proc.stdout.strip() else None
+    return (proc.stdout.strip(), True) if proc.returncode == 1 and proc.stdout.strip() else None
 
 
-def emit(message: str, out: TextIO) -> None:
-    text = f"{message}\n{FOOTER}"
-    if os.environ.get("FRESHPIN_HOOK_MODE", "").lower() == "context":
+def emit(audit: Audit, out: TextIO) -> None:
+    message, blocking = audit
+    text = f"{message}\n{FOOTER if blocking else ADVISORY_FOOTER}"
+    if not blocking or os.environ.get("FRESHPIN_HOOK_MODE", "").lower() == "context":
         payload: dict[str, Any] = {
             "hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}
         }

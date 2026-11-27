@@ -23,7 +23,14 @@ DEFAULT_TTL_SECONDS = 6 * 60 * 60
 CACHE_FILENAME = "cache.json"
 # Bump when cached registry data changes shape, so stale answers are never reused.
 # 2: GitHub entries carry the repository's floating refs ("floating", "refs_complete").
-_SCHEMA_VERSION = 2
+# 3: PyPI and crates.io entries carry every published and yanked version ("versions",
+#    "yanked"), so exact pins can be checked; npm per-version facts ("release:" keys).
+_SCHEMA_VERSION = 3
+# Entries this old (or older than the TTL, if that is longer) are dropped when the cache is
+# written. Expired entries are kept that long only as an offline fallback. Without a limit
+# the file, which every hook run reads, would grow with every package ever looked up, and
+# PyPI and crates.io entries carry each package's full version list.
+MAX_AGE_SECONDS = 30 * 24 * 60 * 60
 
 
 def default_cache_dir() -> Path:
@@ -145,6 +152,8 @@ class Cache:
                 theirs = merged.get(key)
                 if theirs is None or float(theirs["ts"]) <= float(ours["ts"]):
                     merged[key] = ours
+            cutoff = time.time() - max(self.ttl, MAX_AGE_SECONDS)
+            merged = {k: v for k, v in merged.items() if float(v["ts"]) >= cutoff}
             payload = {"version": _SCHEMA_VERSION, "entries": merged}
             try:
                 self.path.parent.mkdir(parents=True, exist_ok=True)

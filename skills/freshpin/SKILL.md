@@ -26,11 +26,13 @@ Your training data is months or years old. Versions you remember, like `actions/
    freshpin audit . --format agent
    ```
 
-   Each line reads `file:line | current -> suggested [bump] note`. Apply the suggestion, then run the audit again until it prints `freshpin: OK`.
+   Each line reads `file:line | current -> suggested [bump] note`. Apply the suggestion, then run the audit again until it prints `freshpin: OK`. An `unverified:` line names versions freshpin could not check (the registry was unreachable). Confirm those with `freshpin resolve <ecosystem>:<name>` before you finish.
+   - `[missing]` means the exact version you pinned **does not exist** on the registry, so installing it fails. It was almost certainly recalled wrongly. Always replace it with the suggested version; never keep it or ignore it. The suggestion stays on the same major version when one exists. If the note says the suggestion is a breaking upgrade and the project must stay on its current major, use the newest release of that major instead (the note says how to find it).
+   - `[yanked]` means the maintainers withdrew that exact version (yanked on PyPI or crates.io, deprecated on npm), usually because it is broken or unsafe. Move to the suggested version, even when that is a downgrade.
 
 ## When an older version is correct
 
-Keep an older version only when there is a real reason. For example, the user asked for it, a peer dependency requires it, or the platform does not support the newer one yet. When you keep one, say why in your reply, and add a `# freshpin: ignore` comment on that line if the file format allows comments. JSON does not.
+Keep an older version only when there is a real reason. For example, the user asked for it, a peer dependency requires it, or the platform does not support the newer one yet. When you keep one, say why in your reply, and add a `# freshpin: ignore` comment on that line if the file format allows comments. JSON does not. This never applies to a `[missing]` version, and a `[yanked]` one needs the user's explicit say-so.
 
 ## Running the CLI
 

@@ -1,13 +1,13 @@
 # Validation: does freshpin work?
 
-All results below were measured on **2026-11-26** against freshpin 0.1.0. They come from Claude Code 2.1.326 on macOS (Apple silicon). Every run can be reproduced with the commands shown.
+All results below were measured on **2026-11-26** against freshpin 0.1.0, except the code-quality checks ([section 4](#4-code-quality)), which were re-run on **2026-11-27** against 0.2.0. They come from Claude Code 2.1.326 on macOS (Apple silicon). Every run can be reproduced with the commands shown.
 
 | Question | Method | Result |
 |---|---|---|
 | Does it change what an AI agent writes? | A/B `claude plugin eval`: the same prompts with and without the plugin, deterministic graders | **With freshpin: 39/39 checks pass (100%). Without: 0/39.** The skill fired in 6/6 runs. |
 | Are its answers correct? | Compared with independent sources of truth | **97/97 versions match; 43/43 suggested Docker tags and 22/22 suggested `uses:` refs exist** |
 | Does it survive real projects? | Audited 18 popular open-source repositories | **12,135 declarations in 1,321 files: 0 crashes, 0 parse errors; 78/78 Docker suggestions verified** |
-| Is the code sound? | Offline unit and integration tests, ruff, `mypy --strict`, every supported Python | **317 tests pass on Python 3.9–3.15; 94% branch coverage** |
+| Is the code sound? | Offline unit and integration tests, ruff, `mypy --strict`, every supported Python | **393 tests pass on Python 3.9–3.15; 95% branch coverage** |
 | Is the plugin well formed? | `claude plugin validate . --strict` | **Passes with nothing to report** |
 
 ---
@@ -165,9 +165,9 @@ uv run pytest -v
 |---|---|
 | ruff (with security rules) | clean |
 | `mypy --strict` (package, hook, launcher) | clean, 23 files |
-| pytest | 317 passed: versioning 74, cache 13, registries 76, auditors 103, CLI 23, hook 28. All offline; the network is blocked in tests. |
-| Branch coverage | 94% |
-| Python 3.9.6 / 3.10.20 / 3.11.6 / 3.12.13 / 3.13.5 / 3.14.5 / 3.15.0 | 317/317 on each |
+| pytest | 393 passed: versioning 74, cache 15, registries 76, auditors 103, missing and yanked pins 74, CLI 23, hook 28. All offline; the network is blocked in tests. |
+| Branch coverage | 95% (`coverage run --branch --source=src/freshpin -m pytest`) |
+| Python 3.9.6 / 3.10.20 / 3.11.6 / 3.12.13 / 3.13.5 / 3.14.5 / 3.15.0 | 393/393 on each |
 | Wheel / sdist | build; `twine check --strict` passes; zero runtime dependencies; `Requires-Python: >=3.9` |
 | `claude plugin validate . --strict` | passes, nothing to report |
 

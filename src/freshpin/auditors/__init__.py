@@ -18,6 +18,8 @@ from freshpin.auditors.base import (
     Finding,
     display_path,
     evaluate,
+    pinned_version,
+    release_state,
     with_status,
 )
 from freshpin.auditors.cargo_toml import parse_cargo_toml
@@ -25,10 +27,10 @@ from freshpin.auditors.docker import parse_compose, parse_dockerfile
 from freshpin.auditors.github_workflows import parse_workflow
 from freshpin.auditors.package_json import parse_package_json
 from freshpin.auditors.pyproject import parse_pyproject, parse_requirements
-from freshpin.registries import Resolver
+from freshpin.registries import Resolution, Resolver
 from freshpin.registries.dockerhub import TagChecker
 from freshpin.registries.endoflife import cycles_from_details, sort_cycles
-from freshpin.versioning import Bump, parse_version, truncate
+from freshpin.versioning import Bump, Version, parse_version, truncate
 
 __all__ = [
     "AuditReport",
@@ -159,6 +161,16 @@ class AuditReport:
     def outdated(self) -> list[Finding]:
         return [f for f in self.findings if f.status == "outdated"]
 
+    @property
+    def flagged(self) -> list[Finding]:
+        """Everything that needs a change: outdated, missing and yanked findings."""
+        return [f for f in self.findings if f.flagged]
+
+    @property
+    def unconfirmed(self) -> list[Finding]:
+        """Exact pins that may not exist: absent from a cached list, not re-checked live."""
+        return [f for f in self.findings if f.unconfirmed]
+
     def counts(self) -> dict[str, int]:
         tally = Counter(f.status for f in self.findings)
         return {status: tally.get(status, 0) for status in STATUSES}
@@ -221,6 +233,7 @@ def audit_paths(
             refs.append(ref)
     lookups = [(r.ecosystem, r.name) for r in refs if r.needs_lookup]
     resolutions = resolver.resolve_many(lookups) if lookups else {}
+    resolutions = check_pinned_releases(refs, resolutions, resolver)
     report.findings = [
         evaluate(
             ref,
@@ -238,6 +251,63 @@ def audit_paths(
         )
         resolver.cache.flush()
     return report
+
+
+Key = tuple[str, str]
+Release = tuple[str, str, str]  # (ecosystem, name, version)
+
+
+def check_pinned_releases(
+    refs: Sequence[DependencyRef], resolutions: dict[Key, Resolution], resolver: Resolver
+) -> dict[Key, Resolution]:
+    """Gather what evaluation needs to tell whether exact pins exist and are not yanked.
+
+    * A pin that is absent from a *cached* version list (PyPI, crates.io) may simply be
+      newer than the cache, so that package is fetched again, live, before it is reported
+      as missing. Offline, it stays unconfirmed and is not reported.
+    * npm's package lookup lists no versions, so each exact pin that is not the latest
+      release gets one small, cached per-version lookup, merged in as ``releases``.
+    * A version confirmed missing live is remembered for a few minutes
+      (:data:`~freshpin.registries.MISSING_TTL_SECONDS`), so an agent editing the file
+      again before fixing it does not trigger another full download each time.
+    """
+    refetch: dict[Key, None] = {}
+    recheck: list[tuple[Release, Key, Version]] = []
+    per_version: dict[Release, Key] = {}
+    known: dict[Key, dict[str, object]] = {}  # facts merged into details["releases"]
+    for ref in refs:
+        key = (ref.ecosystem, ref.name)
+        res = resolutions.get(key)
+        pinned = pinned_version(ref) if ref.needs_lookup else None
+        if pinned is None or res is None or not res.ok:
+            continue
+        state, _ = release_state(res, pinned)
+        item = (res.ecosystem, res.name, pinned.raw)
+        if state == "unconfirmed":
+            if resolver.confirmed_missing(*item):
+                known.setdefault(key, {})[pinned.raw] = {"published": False}
+            else:
+                refetch[key] = None
+                recheck.append((item, key, pinned))
+        elif state == "unknown":
+            per_version[item] = key
+    out = dict(resolutions)
+    if refetch and not resolver.offline:
+        for key, res in resolver.resolve_many(list(refetch), refresh=True).items():
+            if res.ok and not res.cached:
+                out[key] = res
+    for item, key, pinned in recheck:
+        if out[key] is not resolutions[key] and release_state(out[key], pinned)[0] == "missing":
+            resolver.remember_missing(*item)
+    for item, facts in resolver.check_releases(per_version).items():
+        known.setdefault(per_version[item], {})[item[2]] = facts
+    for key, found in known.items():
+        res = out[key]
+        previous = res.details.get("releases")
+        merged = {**(previous if isinstance(previous, dict) else {}), **found}
+        out[key] = replace(res, details={**res.details, "releases": merged})
+    resolver.cache.flush()
+    return out
 
 
 class OsVariants:
